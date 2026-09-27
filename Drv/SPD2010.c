@@ -716,6 +716,15 @@ static void _pin_out_config(gpio_pin_e pin, uint8_t default_state)
 void DRIVER_SPD2010_Init(BSP_DRIVER_SPI_ID SPI_ID)
 {
 	(void)SPI_ID;
+
+    /*
+     * Register the SPI completion callback before any display transaction.
+     * Without this registration the DMA transfer can complete normally,
+     * but _spi_callback() is never invoked and LVGL remains in the
+     * "flushing" state forever after the first asynchronous frame.
+     */
+    BSP_DRIVER_SPI_SetCallback(BDSID_LSPI, _spi_callback);
+
 	GPIO_Config(DISPLAY_CS, GPIO_OUTPUT, GPIO_PIN_OUT_HIGH);
 	GPIO_Config(DISPLAY_RESET, GPIO_OUTPUT, GPIO_PIN_OUT_LOW);
     _display_reset();
