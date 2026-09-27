@@ -81,7 +81,7 @@ static BSP_DRIVER_SPI_Def spi[BDSID_COUNT] =
         &lspi_config,
         DMA0,
         DMA1,
-        12000000,
+        15000000,
         NULL,
         SPI_TRANSFER_NONE,
         false
@@ -201,7 +201,7 @@ static void _spi_hw_init(BSP_DRIVER_SPI_ID ID)
      * A missing/broken SPI clock or FIFO condition therefore looks like an
      * infinite loop during display initialization.  Keep the driver's
      * blocking path bounded; even the largest blocking display chunk is
-     * well below this at 12 MHz.
+     * well below this at 15 MHz.
      */
     spi_set_error_timeout(dev->module, SPI_BLOCKING_TIMEOUT_US);
 
