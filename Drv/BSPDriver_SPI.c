@@ -47,6 +47,8 @@ typedef struct
     uint32_t speed;
     BSP_DRIVER_SPI_CB cb;
     volatile BSP_DRIVER_SPI_TRANSFER transfer;
+    volatile BSP_DRIVER_SPI_MSG pending_msg;
+    volatile bool callback_pending;
     volatile bool busy;
 } BSP_DRIVER_SPI_Def;
 
@@ -84,6 +86,8 @@ static BSP_DRIVER_SPI_Def spi[BDSID_COUNT] =
         12000000,
         NULL,
         SPI_TRANSFER_NONE,
+        BDSM_NONE,
+        false,
         false
     },
     {
@@ -96,6 +100,8 @@ static BSP_DRIVER_SPI_Def spi[BDSID_COUNT] =
         1000000,
         NULL,
         SPI_TRANSFER_NONE,
+        BDSM_NONE,
+        false,
         false
     }
 };
@@ -120,8 +126,8 @@ static void _spi_finish(BSP_DRIVER_SPI_ID ID, BSP_DRIVER_SPI_MSG msg)
     spi[ID].transfer = SPI_TRANSFER_NONE;
     spi[ID].busy = false;
 
-    if (cb)
-        cb(ID, msg);
+    spi[ID].pending_msg = msg;
+    spi[ID].callback_pending = true;
 }
 
 /*
@@ -229,6 +235,8 @@ void BSP_DRIVER_SPI_Init(void)
     for (i = 0; i < BDSID_COUNT; ++i)
     {
         spi[i].transfer = SPI_TRANSFER_NONE;
+        spi[i].pending_msg = BDSM_NONE;
+        spi[i].callback_pending = false;
         spi[i].busy = false;
         spi[i].cb = NULL;
         _spi_hw_init((BSP_DRIVER_SPI_ID)i);
@@ -339,6 +347,8 @@ int BSP_DRIVER_SPI_WriteBlocking(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t co
      * arbitrary buffer address, which is important for short command
      * buffers allocated on the stack.
      */
+    dev->callback_pending = false;
+    dev->pending_msg = BDSM_NONE;
     dev->busy = true;
     dev->transfer = SPI_TRANSFER_WRITE;
 
@@ -354,7 +364,21 @@ int BSP_DRIVER_SPI_WriteBlocking(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t co
 
 void BSP_DRIVER_SPI_Poll(void)
 {
-    /* Kept temporarily for source compatibility. Transfers are interrupt-driven. */
+    int i;
+
+    for (i = 0; i < BDSID_COUNT; ++i)
+    {
+        if (spi[i].callback_pending)
+        {
+            BSP_DRIVER_SPI_CB cb = spi[i].cb;
+            BSP_DRIVER_SPI_MSG msg = spi[i].pending_msg;
+
+            spi[i].callback_pending = false;
+
+            if (cb)
+                cb((BSP_DRIVER_SPI_ID)i, msg);
+        }
+    }
 }
 
 static void _disable_pin(gpio_pin_e pin)
