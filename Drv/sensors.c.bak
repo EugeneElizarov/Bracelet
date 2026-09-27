@@ -1,0 +1,481 @@
+/*
+ * sensors.c
+ *
+ *  Created on: 26 мар. 2026 г.
+ *      Author: eugen
+ */
+
+#include "sensors.h"
+#include "softtmrs.h"
+#include "../messages.h"
+#include "GPIOGroupInt.h"
+#include "BSPDriver_SPI.h"
+#include "../Widgets/clock.h"
+#include "../BBStream.h"
+#include "../app_config.h"
+
+#define EXT_INT1			GPIO_PF4
+#define EXT_CS				GPIO_PA1
+
+#define GSR_IMITATION		1
+
+#ifndef GSR_WARNING_TIMEOUT
+#define GSR_WARNING_TIMEOUT 		MS2COUNT(71000)
+#endif
+
+#ifndef GSR_ALARM_TIMEOUT
+#define GSR_ALARM_TIMEOUT 			MS2COUNT(81000)
+#endif
+
+volatile int i;
+uint8_t sensors_buffer[20];
+
+/*
+data_point_t data[DATA_POINT_QTY] =
+{
+	{&mode,						          1}, // 0
+	{&out1_event_mask,                    1}, // 1
+	{&out2_event_mask,                    1}, // 2
+	{(uint8_t*)&gyr_Temperature,          4}, // 3
+	{(uint8_t*)&acc_result.raw_buffer[0], 6}, // 7
+	{(uint8_t*)&acc_result.acc_x,        12}, // 13
+	{(uint8_t*)&gyr_result.raw_buffer[0], 6}, // 25
+	{(uint8_t*)&gyr_result.gyr_x,        12}, // 31
+	{(uint8_t*)&ResultHR,                 1}, // 43
+	{(uint8_t*)&R,  	                  4}  // 44
+};
+*/
+
+typedef struct __attribute__((packed))
+{
+	uint8_t flags;
+	uint8_t pulse;
+	int16_t temp;
+	uint16_t acc[3];
+	float R;
+	struct
+	{
+		u32 value : 24;
+		uint8_t mcount : 8;
+	}ADC;
+}SensorData;
+
+static SensorData cur_data =
+{
+	.flags = 0,
+	.pulse = 0x00,
+	.temp = 0,
+	.acc = {0, 0, 0},
+	.ADC = {.value = 0, .mcount = 0},
+	.R = 0,
+};
+
+typedef enum
+{
+	GS_OK,
+	GS_UNKNOWN,
+	GS_WARNING,
+	GS_ALARM
+}GSR_State;
+
+static GSR_State GSR_active = GS_UNKNOWN;
+static uint32_t GSR_timestamp = 0;
+
+#define GSR_PRESENT				0x01
+#define BRACELET_PRESENT		0x02
+
+static const uint8_t constRAW_data[] =
+{
+	0xE0 | BRACELET_PRESENT,
+	74,
+	00, 34,
+	00, 01, 02, 03, 04, 05,
+	0x00, 0x00, 0xC8, 0x42,
+	0x22, 0x33, 0x44,
+	0xFF, 0xFF, 0xFF
+};
+
+#if GSR_IMITATION != 0
+static uint8_t GSR_count = 0;
+#endif
+
+static inline void _get_data(void *dest, uint8_t *source, uint8_t offset, uint8_t len, uint8_t index)
+{
+	memcpy(dest, &(source[(len * index) + offset]), len);
+}
+
+static bool _shift_byte(uint8_t *value, bool hbit)
+{
+	bool result = (*value & 1) != 0 ? true : false;
+	*value >>= 1;
+	if (hbit)
+		*value |= 0x80;
+	return result;
+}
+
+static void _shift_buffer(uint8_t *buffer, uint8_t count)
+{
+	bool hbit = true;
+	while (count)
+	{
+		hbit = _shift_byte(buffer++, hbit);
+		count--;
+	}
+}
+
+static sensors_timer_counter = 0;
+static float resistance = 0;
+#define Kalman_K	0.999
+
+// 49.95
+// 99.7
+
+void _sensors_timer(TimerHandle timer)
+{
+	uint8_t point_no = 0;
+	SensorData current = cur_data;
+	GSR_State cur_GSR_active = GSR_active;
+	uint32_t current_timestamp = SoftwareTimers_GetCount();
+	uint8_t *buf = NULL;
+
+#if GSR_IMITATION != 0
+	if (GSR_count < 250)
+		GSR_count++;
+#endif
+
+	sensors_timer_counter++;
+
+	gpio_set_low_level(EXT_CS);
+	SoftwareTimers_DelayUs(100);
+	//if (BSP_DRIVER_SPI_Write(BDSID_GSPI, &point_no, 1) == BDSM_OK)
+	{
+		bool result = true;
+		uint8_t count = sizeof(sensors_buffer) / 4;
+		buf = sensors_buffer;
+		memset(sensors_buffer, 0, sizeof(sensors_buffer));
+/*		SoftwareTimers_DelayUs(10);
+
+		while (((count--) > 0) && result)
+		{
+			result &= (BSP_DRIVER_SPI_Read(BDSID_GSPI, buf++, 1) == BDSM_OK);
+			SoftwareTimers_DelayUs(1);
+		}
+*/
+/*
+		while (result && (count > 0))
+		{
+			uint8_t data;
+			result &= BSP_DRIVER_SPI_Read(BDSID_GSPI, &data, 1) == BDSM_OK;
+			*buf++ = data;
+			count--;
+		}
+
+		if (result)
+*/
+		//if (BSP_DRIVER_SPI_Read(BDSID_GSPI, sensors_buffer, sizeof(sensors_buffer)) == BDSM_OK)
+		memcpy(sensors_buffer, constRAW_data, sizeof(constRAW_data));
+		{
+			float temp;
+			int i = 2;
+
+			while (((*sensors_buffer & 0xF0) != 0xE0) && (i != 0))
+			{
+				_shift_buffer(sensors_buffer, sizeof(sensors_buffer));
+				i--;
+			}
+
+			if (i == 0)
+			{
+				gpio_set_high_level(EXT_CS);
+				return;
+			}
+
+			buf = sensors_buffer;
+
+			if (buf[0] == buf[1])
+			{
+				buf++;
+			}
+
+#if GSR_IMITATION != 0
+			if (GSR_count >= 20)
+			{
+				*buf |= GSR_PRESENT;
+				GSR_count = 0;
+			}
+#endif
+
+//			buf++;
+			memset(&current, 0, sizeof(current));
+			memcpy(&current, buf, sizeof(current) - 1);
+			if (current.pulse < 15)
+				current.pulse = 0;
+			//tlkapi_send_str_data("sensor RAW data ", buf, sizeof(sensors_buffer) - 1);
+
+			//current.pulse = buf[1];
+			/*
+			for (i = 1; i < sizeof(sensors_buffer); i++)
+			  if (sensors_buffer[i])
+			  {
+			    current.pulse = i;
+			    break;
+			  }
+			*/
+			/*
+			memcpy(&temp, sensors_buffer, 4);
+			current.temp = (uint8_t)temp;
+			/*
+			 e4 30 00 00
+			 - c8 60 00 00
+			 */
+			/*
+			float temp;
+			_get_data(&current.pulse, sensors_buffer, 43, 1, 0);
+			_get_data(&temp, sensors_buffer, 3, 4, 0);
+			current.temp = (int16_t)(temp * 2);
+			_get_data(&current.acc, sensors_buffer, 7, 6, 0);
+			*/
+			//Message_Add(MESSAGE_CHANGE_PULSE, current.pulse, 0, 0);
+			/*
+			if (cur_data.temp != current.temp)
+				Message_Add(MESSAGE_CHANGE_TEMPERATURE, current.temp, 0, 0);
+			if (cur_data.acc[0] != current.acc[0])
+				Message_Add(MESSAGE_CHANGE_ACC_X, 0, current.acc[0], 0);
+			if (cur_data.acc[1] != current.acc[1])
+				Message_Add(MESSAGE_CHANGE_ACC_Y, 0, current.acc[1], 0);
+			if (cur_data.acc[2] != current.acc[2])
+				Message_Add(MESSAGE_CHANGE_ACC_Z, 0, current.acc[2], 0);
+			*/
+			//BSP_DRIVER_SPI_Write(BDSID_GSPI, sensors_buffer, sizeof(sensors_buffer));
+		}
+	}
+	gpio_set_high_level(EXT_CS);
+
+	cur_GSR_active = GSR_active;
+
+	if ((current.flags & BRACELET_PRESENT) == 0)
+	{
+		if ((cur_data.flags & BRACELET_PRESENT) != 0)
+		{
+			Message_Add(MESSAGE_BRACELET_HAND_OFF, 0, 0, 0);
+			Message_Add(MESSAGE_CLOCK_SET_PULSE, 0, 0, 0);
+			Message_Add(MESSAGE_CLOCK_SHOW_HEART, IS_OFF, 0, 0);
+			BBStream_Send(BB_EVENT_OFF_HAND, NULL);
+			tlk_printf("Off hand event\n");
+			resistance = 0;
+		}
+		memset(&current, 0, sizeof(current));
+		cur_GSR_active = GS_UNKNOWN;
+		GSR_timestamp = current_timestamp;
+		if (GSR_timestamp == 0)
+			GSR_timestamp--;
+#if GSR_IMITATION != 0
+		GSR_count = 0;
+#endif
+		return;
+	}
+	else
+	{
+		/*u8 flags = current.flags;
+		memset(&current, 0, sizeof(current));
+		current.flags = flags;
+		Sensors_ResetAlarm();*/
+		if ((cur_data.flags & BRACELET_PRESENT) == 0)
+		{
+			Message_Add(MESSAGE_BRACELET_HAND_ON, 0, 0, 0);
+			BBStream_Send(BB_EVENT_ON_HAND, NULL);
+			tlk_printf("On hand event\n");
+			Sensors_ResetAlarm();
+		}
+	}
+
+	uint32_t timeout = (GSR_timestamp != 0) ? current_timestamp - GSR_timestamp : 0;
+
+	if (timeout >= GSR_WARNING_TIMEOUT)
+	{
+		if (timeout >= GSR_ALARM_TIMEOUT)
+			cur_GSR_active = GS_ALARM;
+		else
+			if (cur_GSR_active < GS_WARNING)
+				cur_GSR_active = GS_WARNING;
+	}
+	if (current.flags & BRACELET_PRESENT)
+	{
+	if ((current.flags & GSR_PRESENT) != 0)
+	{
+		uint32_t interval = (GSR_timestamp == 0) ? 0 : COUNT2MS(current_timestamp - GSR_timestamp);
+		BBStream_Send(BB_EVENT_GSR, NULL);
+		BBStream_Send(BB_EVENT_INTERVAL_GSR, &interval);
+		GSR_timestamp = current_timestamp;
+		if (GSR_timestamp == 0)
+			GSR_timestamp--;
+		cur_GSR_active = CS_GOOD;
+	}
+
+	//if (resistance == 0)
+		resistance = current.R;
+	//else
+	//	resistance = (current.R * Kalman_K) + (resistance * (1 - Kalman_K));
+
+	if ((sensors_timer_counter & 1) == 0)
+	{
+		// 1/4 секунды
+
+		cur_data.acc[0] = (cur_data.acc[0] + current.acc[0]) >> 1;
+		cur_data.acc[1] = (cur_data.acc[1] + current.acc[1]) >> 1;
+		cur_data.acc[2] = (cur_data.acc[2] + current.acc[2]) >> 1;
+		BBStream_Send(BB_EVENT_ACC, cur_data.acc);
+		cur_data.ADC.value = ((u32)cur_data.ADC.value + current.ADC.value) >> 1;
+		cur_data.R = (resistance * 1000);// * 1.9615) - 60769/* * 99700 / 82946.052*/;
+		current.R = cur_data.R;
+		BBStream_Send(BB_EVENT_ADC_24, &cur_data.ADC);
+		BBStream_Send(BB_EVENT_R, &cur_data.R);
+	}
+
+	if ((sensors_timer_counter & 7) == 0)
+	{
+		// 1 секунда
+		if (current.pulse)
+			BBStream_Send(BB_EVENT_HR_PULSE, &current.pulse);
+		uint8_t temp = (current.temp >> 8) + 128;
+		BBStream_Send(BB_EVENT_TEMP, &temp);
+		/*if (buf)
+			tlkapi_send_str_data("sensor RAW data ", buf, sizeof(sensors_buffer) - 1);*/
+		if (current.flags & BRACELET_PRESENT)
+		{
+			tlk_printf("Resistance: %f Ohm\n", current.R);
+			//tlkapi_send_str_data("float R to arr", pData, data_len)
+		}
+	}
+	}
+
+	if (cur_data.pulse != current.pulse)
+	{
+		tlk_printf("Heart rate changed to %d\n", current.pulse);
+		Message_Add(MESSAGE_CLOCK_SET_PULSE, 0, P16(current.pulse, 0), 0);
+		Message_Add(MESSAGE_CLOCK_SHOW_HEART, current.pulse == 0 ? IS_OFF : IS_FLASH, 0, 0);
+	}
+
+	if (cur_GSR_active != GSR_active)
+	{
+
+		GSR_active = cur_GSR_active;
+		switch(GSR_active)
+		{
+			case GS_OK:
+			{
+				Message_Add(MESSAGE_CLOCK_SET_STATE, CS_GOOD, 0, 0);
+				break;
+			}
+			case GS_UNKNOWN:
+			{
+				Message_Add(MESSAGE_CLOCK_SET_STATE, CS_UNKNOWN, 0, 0);
+				break;
+			}
+			case GS_WARNING:
+			{
+				Message_Add(MESSAGE_CLOCK_SET_STATE, CS_WARNING, 0, 0);
+				break;
+			}
+			case GS_ALARM:
+			{
+				Message_Add(MESSAGE_CLOCK_SET_STATE, CS_ALARM, 0, 0);
+				break;
+			}
+		}
+		Message_Add(MESSAGE_CLOCK_SHOW_HAND, ((GSR_active == GS_OK) || (GSR_active == GS_WARNING))? IS_ON : IS_OFF, 0, 0);
+	}
+
+#if SERVICE_TSKBM != 0
+	void TSKBMSetData(bool onHand, int32_t GSR_R, u32 ad7791_read_data);
+	TSKBMSetData(current.flags & GSR_PRESENT, current.R, current.ADC.value);
+
+	cur_data.flags = current.flags;
+	cur_data.pulse = current.pulse;
+	cur_data.temp = current.temp;
+	memcpy(cur_data.acc, current.acc, sizeof(cur_data.acc));
+	cur_data.ADC.value = ((u32)cur_data.ADC.value + current.ADC.value) >> 1;
+	cur_data.R += current.R;
+	cur_data.ADC.mcount++;
+	if (cur_data.ADC.mcount >= 2)
+	{
+		BBStream_Send(BB_EVENT_ADC_24, &(cur_data.ADC));
+		BBStream_Send(BB_EVENT_R, &(cur_data.R));
+		cur_data.R = 0;
+		cur_data.ADC.value = 0;
+		cur_data.ADC.mcount = 0;
+	}
+#endif
+    cur_data.flags = current.flags;
+    cur_data.pulse = current.pulse;
+    cur_data.temp = current.temp;
+    cur_data.R = current.R;
+    cur_data.ADC.value = current.ADC.value;
+    memcpy(cur_data.acc, current.acc, sizeof(cur_data.acc));
+
+/*
+    cur_data.R += current.R;
+    cur_data.ADC.value = ((u32)cur_data.ADC.value + current.ADC.value) >> 1;
+    cur_data.ADC.mcount++;
+    if (cur_data.ADC.mcount >= 4)
+    {
+    	BBStream_Send(BB_EVENT_ADC_24, &cur_data.ADC);
+    	BBStream_Send(BB_EVENT_R, &cur_data.R);
+    	cur_data.ADC.value = 0;
+    	cur_data.R = 0;
+    	cur_data.ADC.mcount = 0;
+    }
+*/
+}
+/*
+	uint8_t flags;
+	uint8_t pulse;
+	int16_t temp;
+	uint16_t acc[3];
+	float R;
+	struct
+	{
+		u32 value : 24;
+		uint8_t mcount : 8;
+	}ADC;
+*/
+
+static TimerHandle sensors_timer = NULL;
+
+bool _sensors_message(Message msg)
+{
+	if (msg->upar8 == GPIO_GroupFromPin(EXT_INT1))
+		if (sensors_timer)
+			_sensors_timer(NULL);
+}
+
+void Sensors_Init(void)
+{
+	GPIO_Config(EXT_INT1, GPIO_INPUT, GPIO_PIN_PULLUP_10K);
+	GPIO_Config(EXT_CS, GPIO_OUTPUT, GPIO_PIN_OUT_HIGH);
+	Message_AddProcessor(_sensors_message, MESSAGES(MESSAGE_GPIO_EVENT));
+	GPIO_GroupRegister(EXT_INT1, INTR_RISING_EDGE, 0, NULL);
+	Sensors_Wakeup();
+}
+
+void Sensors_ResetAlarm(void)
+{
+	GSR_active = CS_UNKNOWN;
+	Message_Add(MESSAGE_CLOCK_SHOW_HAND, IS_OFF, 0, 0);
+	GSR_timestamp = 0;
+}
+
+void Sensors_Sleep(void)
+{
+	if (sensors_timer)
+	{
+		SoftTimers_Delete(sensors_timer);
+		sensors_timer = NULL;
+	}
+}
+
+void Sensors_Wakeup(void)
+{
+	if (sensors_timer == NULL)
+		sensors_timer = SoftTimers_Create(500, true, _sensors_timer);
+}

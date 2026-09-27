@@ -1,0 +1,99 @@
+#ifndef __BSP_LSPI_H__
+#define __BSP_LSPI_H__
+
+#include "tl_common.h"
+
+/*********************************************************************
+
+Configuration
+*********************************************************************/
+
+/*
+Частота PLL, используемая LSPI.
+При необходимости переопределите этот макрос
+в конфигурации проекта.
+*/
+
+#ifndef LSPI_QSPI_DMA_PLL_CLK_HZ
+#define LSPI_QSPI_DMA_PLL_CLK_HZ 96000000UL
+#endif
+
+/* Требуемая максимальная частота LSPI. */
+#define LSPI_QSPI_DMA_TARGET_CLK_HZ 15000000UL
+
+/* DMA канал для передачи LSPI TX. */
+#define LSPI_QSPI_DMA_CHANNEL DMA0
+
+/*********************************************************************
+Types
+*********************************************************************/
+
+/* Режим работы интерфейса. */
+typedef enum
+{
+	LSPI_QSPI_DMA_MODE_SPI = 0,		// Обычный SPI. Используется SPI_SINGLE_MODE.
+	LSPI_QSPI_DMA_MODE_QSPI,		// Quad SPI. Используется SPI_QUAD_MODE.
+} BSP_LSPIMode;
+
+/*
+
+Статус операций модуля.
+*/
+typedef enum
+{
+	LSPI_QSPI_DMA_OK = 0,			// Все в порядке
+	LSPI_QSPI_DMA_BUSY,				// Передача уже выполняется.
+	LSPI_QSPI_DMA_INVALID_PARAM,	// Некорректный параметр.
+	LSPI_QSPI_DMA_NOT_INITIALIZED,	// Модуль не инициализирован.
+} BSP_LSPIStatus;
+
+/*
+Callback окончания передачи.
+Вызывается из контекста IRQ_LSPI.
+*/
+typedef void (*bsp_lspi_callback_t)(BSP_LSPIStatus status);
+
+/* Конфигурация модуля. */
+typedef struct
+{
+	lspi_pin_config_t pin_config;			// Конфигурация выводов LSPI. Заполняется пользователем.
+	BSP_LSPIMode mode;						// Начальный режим работы: LSPI_QSPI_DMA_MODE_SPI или LSPI_QSPI_DMA_MODE_QSPI
+	bsp_lspi_callback_t tx_done_callback;	// Callback окончания передачи.	Может быть NULL.
+} BSP_LSPIConfig;
+
+/*********************************************************************
+Public API
+*********************************************************************/
+
+/*
+Инициализация модуля.
+Настраивает LSPI pins, LSPI Master, SPI MODE0, SPI или QSPI режим
+DMA0 для TX, SPI END interrupt, IRQ_LSPI
+*/
+BSP_LSPIStatus BSP_LSPIInit(const BSP_LSPIConfig *config);
+
+/*
+Установка режима SPI / QSPI.
+Переключение возможно только когда передача не выполняется.
+*/
+BSP_LSPIStatus BSP_LSPISetMode(BSP_LSPIMode mode);
+
+/* Получение текущего режима. */
+BSP_LSPIMode BSP_LSPIGet_mode(void);
+
+/*
+Асинхронная передача данных.
+Передача выполняется через DMA0. Используется текущий режим: SPI_SINGLE_MODE
+или SPI_QUAD_MODE data должен быть выровнен на 4 байта.
+*/
+BSP_LSPIStatus BSP_LSPISend(unsigned char *data, unsigned int len);
+
+/*
+Проверка состояния передачи.
+return:
+0 - модуль свободен.
+1 - передача выполняется.
+*/
+unsigned char BSP_LSPIIsBusy(void);
+
+#endif /* LSPI_QSPI_DMA_H */

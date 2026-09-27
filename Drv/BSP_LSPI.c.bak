@@ -1,0 +1,283 @@
+#include "BSP_LSPI.h"
+
+/*********************************************************************
+Local definitions
+*********************************************************************/
+
+#define LSPI_QSPI_DMA_SPI LSPI_MODULE
+
+/*********************************************************************
+Local variables
+*********************************************************************/
+
+/* Флаг инициализации модуля. */
+static volatile unsigned char s_initialized = 0;
+
+/* Флаг активной передачи. */
+static volatile unsigned char s_busy = 0;
+
+/* Текущий режим работы. */
+static volatile BSP_LSPIMode s_mode = LSPI_QSPI_DMA_MODE_SPI;
+
+/* Callback окончания передачи. */
+static bsp_lspi_callback_t s_tx_done_callback = NULL;
+
+/*********************************************************************
+Local functions
+*********************************************************************/
+
+/*
+Вычисление делителя частоты LSPI.
+Формула:
+LSPI_CLK = PLL_CLK / DIV
+Делитель выбирается так, чтобы:
+LSPI_CLK <= LSPI_QSPI_DMA_TARGET_CLK_HZ
+*/
+static unsigned short lspi_qspi_dma_get_clock_div(void)
+{
+	unsigned long div;
+
+/*
+ Округление вверх. Это гарантирует, что результирующая частота не будет выше
+ заданной.
+*/
+	div = (LSPI_QSPI_DMA_PLL_CLK_HZ + LSPI_QSPI_DMA_TARGET_CLK_HZ - 1) / LSPI_QSPI_DMA_TARGET_CLK_HZ;
+
+	if (div == 0)
+		div = 1;
+
+	return (unsigned short)div;
+}
+
+/* Применение режима SPI/QSPI. Функция вызывается только когда LSPI не выполняет передачу. */
+static void _lspi_qspi_dma_apply_mode(BSP_LSPIMode mode)
+{
+	switch (mode)
+	{
+		case LSPI_QSPI_DMA_MODE_SPI:			// Обычный однолинейный SPI.
+		{
+			spi_set_io_mode(LSPI_QSPI_DMA_SPI, SPI_3_LINE_MODE);
+			break;
+		}
+		case LSPI_QSPI_DMA_MODE_QSPI:			// Quad SPI.
+		{
+			spi_set_io_mode(LSPI_QSPI_DMA_SPI, SPI_QUAD_MODE);
+			break;
+		}
+		default:								// Сюда попасть не должны:
+		{
+			break;
+		}
+	}
+}
+
+/*********************************************************************
+
+Public functions
+*********************************************************************/
+
+BSP_LSPIStatus BSP_LSPIInit(const BSP_LSPIConfig *config)
+{
+	unsigned short spi_div;
+
+/* Проверка указателя конфигурации. */
+	if (config == NULL)
+	{
+		return LSPI_QSPI_DMA_INVALID_PARAM;
+	}
+
+/* Проверка начального режима. */
+	if ((config->mode != LSPI_QSPI_DMA_MODE_SPI) &&
+		(config->mode != LSPI_QSPI_DMA_MODE_QSPI))
+	{
+		return LSPI_QSPI_DMA_INVALID_PARAM;
+	}
+
+/* Сбрасываем внутреннее состояние. */
+	s_initialized = 0;
+	s_busy = 0;
+
+/* Сохраняем callback. */
+	s_tx_done_callback = config->tx_done_callback;
+
+/* Настройка пинов LSPI. */
+	lspi_set_pin((lspi_pin_config_t *)&config->pin_config);
+
+/* Вычисление делителя для частоты */
+	spi_div = lspi_qspi_dma_get_clock_div();
+
+/* Инициализация LSPI в режиме Master. SPI_MODE0. */
+	spi_master_init(LSPI_QSPI_DMA_SPI, sys_clk.pll_clk * 1000000 / 12000000, SPI_MODE3);
+	spi_master_config(LSPI_QSPI_DMA_SPI, SPI_3LINE);
+
+/* Устанавливаем начальный режим SPI или QSPI. */
+	_lspi_qspi_dma_apply_mode(config->mode);
+	s_mode = config->mode;
+
+/* Настройка DMA0 для LSPI TX. */
+	spi_set_tx_dma_config(LSPI_QSPI_DMA_SPI, LSPI_QSPI_DMA_CHANNEL);
+
+/* Очищаем возможный старый флаг окончания передачи. */
+	spi_clr_irq_status(LSPI_QSPI_DMA_SPI, SPI_END_INT);
+
+/* Разрешаем внутреннее прерывание окончания SPI передачи. */
+	spi_set_irq_mask(LSPI_QSPI_DMA_SPI, SPI_END_INT_EN);
+
+/* Включаем системное прерывание LSPI. */
+	plic_interrupt_enable(IRQ_LSPI);
+
+/* Разрешаем глобальные прерывания ядра. */
+	core_interrupt_enable();
+
+/* Инициализация успешно завершена. */
+	s_initialized = 1;
+
+	return LSPI_QSPI_DMA_OK;
+}
+
+/*********************************************************************
+Mode control
+*********************************************************************/
+
+BSP_LSPIStatus BSP_LSPISetMode(BSP_LSPIMode mode)
+{
+/* Проверяем инициализацию. */
+	if (!s_initialized)
+	{
+		return LSPI_QSPI_DMA_NOT_INITIALIZED;
+	}
+
+/* Проверяем параметр режима. */
+	if ((mode != LSPI_QSPI_DMA_MODE_SPI) &&
+		(mode != LSPI_QSPI_DMA_MODE_QSPI))
+	{
+		return LSPI_QSPI_DMA_INVALID_PARAM;
+	}
+
+/* Нельзя менять режим во время активной передачи. */
+	if (s_busy)
+	{
+		return LSPI_QSPI_DMA_BUSY;
+	}
+
+/* Дополнительная проверка состояния LSPI. */
+	if (spi_is_busy(LSPI_QSPI_DMA_SPI))
+	{
+		return LSPI_QSPI_DMA_BUSY;
+	}
+
+/* Если режим уже установлен, ничего делать не требуется. */
+	if (mode == s_mode)
+	{
+		return LSPI_QSPI_DMA_OK;
+	}
+
+/* Применяем новый режим. */
+	_lspi_qspi_dma_apply_mode(mode);
+
+/* Сохраняем текущий режим. */
+	s_mode = mode;
+
+	return LSPI_QSPI_DMA_OK;
+}
+
+BSP_LSPIMode BSP_LSPIGet_mode(void)
+{
+	return s_mode;
+}
+
+/*********************************************************************
+DMA transmission
+*********************************************************************/
+
+BSP_LSPIStatus BSP_LSPISend(unsigned char *data, unsigned int len)
+{
+/* Проверяем инициализацию. */
+	if (!s_initialized)
+	{
+		return LSPI_QSPI_DMA_NOT_INITIALIZED;
+	}
+
+/* Проверяем параметры. */
+	if ((data == NULL) || (len == 0))
+	{
+		return LSPI_QSPI_DMA_INVALID_PARAM;
+	}
+
+/* DMA адрес должен быть выровнен на 4 байта. */
+	if (((unsigned int)data & 0x03u) != 0)
+	{
+		return LSPI_QSPI_DMA_INVALID_PARAM;
+	}
+
+/* Проверяем внутренний флаг. */
+	if (s_busy)
+	{
+		return LSPI_QSPI_DMA_BUSY;
+	}
+
+/* Дополнительная проверка состояния LSPI. */
+	if (spi_is_busy(LSPI_QSPI_DMA_SPI))
+	{
+		return LSPI_QSPI_DMA_BUSY;
+	}
+
+/* Устанавливаем флаг ДО запуска DMA. Это предотвращает повторный запуск передачи. */
+	s_busy = 1;
+
+/* Очищаем старый SPI END interrupt. */
+	spi_clr_irq_status(LSPI_QSPI_DMA_SPI, SPI_END_INT);
+
+/* Запуск передачи через DMA0. Режим передачи определяется текущим значением s_mode. */
+	spi_master_write_dma(LSPI_QSPI_DMA_SPI, data, len);
+	//spi_master_write(LSPI_QSPI_DMA_SPI, data, len);
+
+	/*if (s_tx_done_callback != NULL)
+	{
+		s_busy = 0;
+		s_tx_done_callback(LSPI_QSPI_DMA_OK);
+	}*/
+
+	return LSPI_QSPI_DMA_OK;
+}
+
+/*********************************************************************
+Status
+*********************************************************************/
+
+unsigned char BSP_LSPIIsBusy(void)
+{
+	return s_busy;
+}
+
+/*********************************************************************
+LSPI IRQ handler
+*********************************************************************/
+
+_attribute_ram_code_sec_noinline_ void lspi_qspi_dma_irq_handler(void)
+{
+	unsigned char status = spi_get_irq_status(LSPI_QSPI_DMA_SPI, 0xFF);
+	/* Сначала очищаем источник прерывания. */
+	spi_clr_irq_status(LSPI_QSPI_DMA_SPI, status);
+/* Проверяем, что причиной IRQ является окончание SPI передачи. */
+	if (status & SPI_END_INT)
+	{
+
+    /* Передача полностью завершена. */
+		s_busy = 0;
+
+    /* Вызываем callback, если он задан. Callback выполняется из контекста IRQ_LSPI. */
+		if (s_tx_done_callback != NULL)
+		{
+			s_tx_done_callback(LSPI_QSPI_DMA_OK);
+		}
+	}
+}
+
+/*********************************************************************
+IRQ registration
+*********************************************************************/
+
+/* Регистрация обработчика системного прерывания LSPI. */
+PLIC_ISR_REGISTER(lspi_qspi_dma_irq_handler, IRQ_LSPI);
+

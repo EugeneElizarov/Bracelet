@@ -1,0 +1,16 @@
+/*
+ * sensors.h
+ *
+ *  Created on: 26 мар. 2026 г.
+ *      Author: eugen
+ */
+
+#ifndef VENDOR_SPI_DEMO_DRV_SENSORS_H_
+#define VENDOR_SPI_DEMO_DRV_SENSORS_H_
+
+void Sensors_Init(void);
+void Sensors_ResetAlarm(void);
+void Sensors_Sleep(void);
+void Sensors_Wakeup(void);
+
+#endif /* VENDOR_SPI_DEMO_DRV_SENSORS_H_ */
