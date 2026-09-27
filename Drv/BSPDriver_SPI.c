@@ -338,15 +338,45 @@ int BSP_DRIVER_SPI_WriteBlocking(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t co
      * Large transfers are not copied because doing so would destroy the
      * purpose of a DMA API. Their caller must provide a word-aligned buffer.
      */
+    /*
+     * The public DMA API requires a word-aligned source. For a blocking
+     * transfer we can preserve the exact SPI byte count by sending an
+     * unaligned buffer in small aligned chunks.
+     */
     if (!_spi_valid_dma_buffer(buffer))
     {
-        if (count > SPI_BLOCKING_TX_MAX)
-            return BDSM_ERROR;
+        const uint8_t *src = (const uint8_t *)buffer;
 
-        memcpy(aligned_buffer[ID], buffer, count);
-        dma_buffer = aligned_buffer[ID];
+        while (count)
+        {
+            uint32_t chunk = count > SPI_BLOCKING_TX_MAX ? SPI_BLOCKING_TX_MAX : count;
+
+            memcpy(aligned_buffer[ID], src, chunk);
+            result = _spi_start(ID, SPI_TRANSFER_WRITE, aligned_buffer[ID], chunk);
+            if (result != BDSM_OK)
+                return result;
+
+            start_tick = stimer_get_tick();
+            while (spi[ID].busy)
+            {
+                if (clock_time_exceed(start_tick, SPI_BLOCKING_TIMEOUT_US))
+                {
+                    spi_hw_fsm_reset(spi[ID].module);
+                    spi[ID].busy = false;
+                    spi[ID].transfer = SPI_TRANSFER_NONE;
+                    spi_clr_irq_status(spi[ID].module, SPI_END_INT);
+                    return BDSM_ERROR;
+                }
+            }
+
+            src += chunk;
+            count -= chunk;
+        }
+
+        return BDSM_OK;
     }
 
+    dma_buffer = buffer;
     result = _spi_start(ID, SPI_TRANSFER_WRITE, dma_buffer, count);
     if (result != BDSM_OK)
         return result;
