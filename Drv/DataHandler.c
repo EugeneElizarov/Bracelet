@@ -320,7 +320,10 @@ static bool ClockMessage(Message message)
 		{
 			tlk_printf("Hand on\n");
 			if (!values.ble_active)
+			{
 				blc_ll_setAdvEnable(BLC_ADV_ENABLE);
+				values.ble_active = true;
+			}
 			if (values.ble_connected)
 				BBStream_Send(BB_EVENT_ON_HAND, NULL);
 			values.hand_on = true;
@@ -455,7 +458,7 @@ static bool ClockMessage(Message message)
 		}
 		case MESSAGE_PARAM_GET_BLE_ACTIVE:
 		{
-			Message_Add(MESSAGE_PARAM_SET_BAT_VOLUME, 0, 0, values.ble_active ? 1 : 0);
+			Message_Add(MESSAGE_PARAM_SET_BLE_ACTIVE, 0, 0, values.ble_active ? 1 : 0);
 			break;
 		}
 		case MESSAGE_PARAM_GET_BLE_CONNECTED:
@@ -647,4 +650,4 @@ void DataHandler_Poll(void)
 		values.connected = connected;
 		Message_Add(connected ? MESSAGE_BLE_CONNECT : MESSAGE_BLE_DISCONNECT, 0, 0, 0);
 	}
-}
+}
