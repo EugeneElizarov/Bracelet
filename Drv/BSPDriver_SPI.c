@@ -2,13 +2,13 @@
 #include <stdbool.h>
 #include <string.h>
 #include "gpio.h"
-#include "stimer.h"
+#include "softtmrs.h"
 #include "../def.h"
 
 #define SPI_DMA_ALIGNMENT      4u
 #define SPI_DMA_ALIGNMENT_MASK (SPI_DMA_ALIGNMENT - 1u)
 #define SPI_BLOCKING_TX_MAX    64u
-#define SPI_BLOCKING_TIMEOUT_US 100000u
+#define SPI_BLOCKING_TIMEOUT_MS 100u
 
 lspi_pin_config_t lspi_pin_config =
 {
@@ -324,7 +324,7 @@ int BSP_DRIVER_SPI_WriteBlocking(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t co
         __attribute__((aligned(4)));
 
     void *dma_buffer = buffer;
-    uint32_t start_tick;
+    uint32_t start_count;
     int result;
 
     if (!_spi_valid_id(ID) || buffer == NULL || count == 0)
@@ -356,10 +356,10 @@ int BSP_DRIVER_SPI_WriteBlocking(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t co
             if (result != BDSM_OK)
                 return result;
 
-            start_tick = stimer_get_tick();
+            start_count = SoftwareTimers_GetCount();
             while (spi[ID].busy)
             {
-                if (clock_time_exceed(start_tick, SPI_BLOCKING_TIMEOUT_US))
+                if (((uint32_t)(SoftwareTimers_GetCount() - start_count) >= MS2COUNT(SPI_BLOCKING_TIMEOUT_MS)))
                 {
                     spi_hw_fsm_reset(spi[ID].module);
                     spi[ID].busy = false;
