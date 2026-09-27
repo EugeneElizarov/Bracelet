@@ -2,7 +2,6 @@
 #include <stdbool.h>
 #include <string.h>
 #include "gpio.h"
-#include "softtmrs.h"
 #include "../def.h"
 
 #define SPI_DMA_ALIGNMENT      4u
@@ -320,81 +319,37 @@ int BSP_DRIVER_SPI_Read(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t count)
 
 int BSP_DRIVER_SPI_WriteBlocking(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t count)
 {
-    static uint8_t aligned_buffer[BDSID_COUNT][SPI_BLOCKING_TX_MAX]
-        __attribute__((aligned(4)));
-
-    void *dma_buffer = buffer;
-    uint32_t start_count;
-    int result;
+    BSP_DRIVER_SPI_Def *dev;
 
     if (!_spi_valid_id(ID) || buffer == NULL || count == 0)
         return BDSM_ERROR;
 
+    dev = &spi[ID];
+
+    if (dev->busy)
+        return BDSM_TAKEN;
+
     /*
-     * A short unaligned command is copied to an aligned DMA buffer.  The
-     * exact byte count is still passed to the SDK: padding must NOT be sent
-     * on the SPI bus.
+     * Use Telink's native blocking master-write API for short transactions.
+     * This is deliberately not implemented as DMA + SPI_END interrupt:
+     * the SDK already provides the correct blocking sequence, including
+     * FIFO setup, transfer mode and bus-busy timeout handling.
      *
-     * Large transfers are not copied because doing so would destroy the
-     * purpose of a DMA API. Their caller must provide a word-aligned buffer.
+     * Unlike spi_master_write_dma(), spi_master_write() accepts an
+     * arbitrary buffer address, which is important for short command
+     * buffers allocated on the stack.
      */
-    /*
-     * The public DMA API requires a word-aligned source. For a blocking
-     * transfer we can preserve the exact SPI byte count by sending an
-     * unaligned buffer in small aligned chunks.
-     */
-    if (!_spi_valid_dma_buffer(buffer))
-    {
-        const uint8_t *src = (const uint8_t *)buffer;
+    dev->busy = true;
+    dev->transfer = SPI_TRANSFER_WRITE;
 
-        while (count)
-        {
-            uint32_t chunk = count > SPI_BLOCKING_TX_MAX ? SPI_BLOCKING_TX_MAX : count;
+    drv_api_status_e status = spi_master_write(dev->module,
+                                               (unsigned char *)buffer,
+                                               count);
 
-            memcpy(aligned_buffer[ID], src, chunk);
-            result = _spi_start(ID, SPI_TRANSFER_WRITE, aligned_buffer[ID], chunk);
-            if (result != BDSM_OK)
-                return result;
+    dev->transfer = SPI_TRANSFER_NONE;
+    dev->busy = false;
 
-            start_count = SoftwareTimers_GetCount();
-            while (spi[ID].busy)
-            {
-                if (((uint32_t)(SoftwareTimers_GetCount() - start_count) >= MS2COUNT(SPI_BLOCKING_TIMEOUT_MS)))
-                {
-                    spi_hw_fsm_reset(spi[ID].module);
-                    spi[ID].busy = false;
-                    spi[ID].transfer = SPI_TRANSFER_NONE;
-                    spi_clr_irq_status(spi[ID].module, SPI_END_INT);
-                    return BDSM_ERROR;
-                }
-            }
-
-            src += chunk;
-            count -= chunk;
-        }
-
-        return BDSM_OK;
-    }
-
-    dma_buffer = buffer;
-    result = _spi_start(ID, SPI_TRANSFER_WRITE, dma_buffer, count);
-    if (result != BDSM_OK)
-        return result;
-
-    start_count = SoftwareTimers_GetCount();
-    while (spi[ID].busy)
-    {
-        if ((uint32_t)(SoftwareTimers_GetCount() - start_count) >= MS2COUNT(SPI_BLOCKING_TIMEOUT_MS))
-        {
-            spi_hw_fsm_reset(spi[ID].module);
-            spi[ID].busy = false;
-            spi[ID].transfer = SPI_TRANSFER_NONE;
-            spi_clr_irq_status(spi[ID].module, SPI_END_INT);
-            return BDSM_ERROR;
-        }
-    }
-
-    return BDSM_OK;
+    return status == DRV_API_SUCCESS ? BDSM_OK : BDSM_ERROR;
 }
 
 void BSP_DRIVER_SPI_Poll(void)
