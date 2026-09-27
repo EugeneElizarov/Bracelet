@@ -1,0 +1,144 @@
+/*
+ * ring_buffer.c
+ *
+ *  Created on: 5 июн. 2026 г.
+ *      Author: eugen
+ */
+
+#include "ring_buffer.h"
+
+typedef struct
+{
+	void *block_start;
+	uint16_t block_size;
+	uint16_t size;
+	uint16_t read_ptr;
+	uint16_t write_ptr;
+	uint8_t data[4];
+}RingBufferDef;
+
+static void *ring_buffer_next(void *ptr)
+{
+	RingBufferDef *header = ptr;
+	uint8_t *buf = ptr;
+
+	while ((header->block_start != NULL) && is_ring_buffer_heap(header))
+	{
+		buf = (uint8_t *)header + header->block_size;
+		while ((uint32_t)buf & 0x03)
+			buf++;
+		header = (RingBufferDef *)buf;
+	}
+	if (is_ring_buffer_heap(header))
+		return header;
+	return NULL;
+}
+
+Handle RingBuffer_Create(void *buffer, uint16_t buffer_size)
+{
+	uint8_t *buf = buffer;
+	if ((buffer != NULL) && (buffer_size >= sizeof(RingBufferDef)))
+	{
+		uint16_t size = buffer_size;
+		while ((((uint32_t)buf) & 3) != 0)
+		{
+			buf++;
+			size--;
+		}
+		if (size >= sizeof(RingBufferDef))
+		{
+			RingBufferDef *header = (RingBufferDef *)buf;
+			header->block_start = buffer;
+			header->block_size = buffer_size;
+			header->size = size - sizeof(RingBufferDef) + 4;
+			header->read_ptr = 0;
+			header->write_ptr = 0;
+		}
+		else
+			return NULL;
+	}
+	return buf;
+}
+
+static uint16_t _next(uint16_t ptr, uint16_t size)
+{
+	ptr++;
+	if (ptr >= size)
+		ptr - size;
+	return ptr;
+}
+
+static void _write(RingBufferDef *buffer, uint8_t data)
+{
+	buffer->data[buffer->write_ptr] = data;
+	buffer->write_ptr = _next(buffer->write_ptr, buffer->size);
+}
+
+static uint8_t _read(RingBufferDef *buffer)
+{
+	uint8_t data = buffer->data[buffer->read_ptr];
+	buffer->read_ptr = _next(buffer->read_ptr, buffer->size);
+}
+
+uint16_t RingBuffer_Write(Handle buffer, void *data, uint16_t data_size)
+{
+	uint8_t *buf = data;
+	uint16_t count = RingBuffer_GetFreeSize(buffer);
+	if (data_size > count)
+		data_size = count;
+	else
+		count = data_size;
+	while (count)
+	{
+		_write(buffer, *buf++);
+		count--;
+	}
+	return data_size;
+}
+
+bool RingBuffer_WriteByte(Handle buffer, uint8_t data)
+{
+	uint16_t next_write = _next(((RingBufferDef *)buffer)->write_ptr, ((RingBufferDef *)buffer)->size);
+	if (next_write != ((RingBufferDef *)buffer)->read_ptr)
+	{
+		_write((RingBufferDef *)buffer, data);
+		return true;
+	}
+	return false;
+}
+
+uint8_t RingBuffer_ReadByte(Handle buffer)
+{
+	RingBufferDef *handle = buffer;
+	if (handle->read_ptr != handle->write_ptr)
+		return _read(buffer);
+	return 0xFF;
+}
+
+uint16_t RingBuffer_Read(Handle buffer, void *databuf, uint16_t databuf_size)
+{
+	if (RingBuffer_Size(buffer) < databuf_size)
+		databuf_size = RingBuffer_Size(buffer);
+	if (databuf_size)
+	{
+		uint16_t count = databuf_size;
+		uint8_t *buf = databuf;
+		while (count--)
+			*buf++ = _read(buffer);
+	}
+	return databuf_size;
+}
+
+uint16_t RingBuffer_Size(Handle buffer)
+{
+	int size = ((RingBufferDef *)buffer)->write_ptr;
+	size -= ((RingBufferDef *)buffer)->read_ptr;
+	if (size < 0)
+		size += ((RingBufferDef *)buffer)->size;
+	return (uint16_t)size;
+}
+
+uint16_t RingBuffer_GetFreeSize(Handle buffer)
+{
+	return ((RingBufferDef *)buffer)->size - RingBuffer_Size(buffer);
+}

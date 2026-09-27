@@ -1,0 +1,23 @@
+/*
+ * ring_buffer.h
+ *
+ *  Created on: 5 июн. 2026 г.
+ *      Author: eugen
+ */
+
+#ifndef VENDOR_ACL_PERIPHERAL_DEMO_UTILS_RING_BUFFER_H_
+#define VENDOR_ACL_PERIPHERAL_DEMO_UTILS_RING_BUFFER_H_
+
+#include "..\def.h"
+#include <stdbool.h>
+#include <stdint.h>
+
+Handle RingBuffer_Create(void *buffer, uint16_t buffer_size);
+uint16_t RingBuffer_Write(Handle buffer, void *data, uint16_t data_size);
+bool RingBuffer_WriteByte(Handle buffer, uint8_t data);
+uint8_t RingBuffer_ReadByte(Handle buffer);
+uint16_t RingBuffer_Read(Handle buffer, void *databuf, uint16_t databuf_size);
+uint16_t RingBuffer_Size(Handle buffer);
+uint16_t RingBuffer_GetFreeSize(Handle buffer);
+
+#endif /* VENDOR_ACL_PERIPHERAL_DEMO_UTILS_RING_BUFFER_H_ */
