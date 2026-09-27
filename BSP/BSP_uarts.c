@@ -196,6 +196,11 @@ void UARTS_Init(void)
         dma_set_llp_irq_mode(desc->dma_rx, DMA_INTERRUPT_MODE);
         dma_set_irq_mask(desc->dma_rx, TC_MASK);
         dma_chn_en(desc->dma_rx);
+    }
+
+    plic_interrupt_enable(IRQ_UART0);
+    core_interrupt_enable();
+}
 
 bool UART_Set_cb(uart_num_e UART, UART_cb cb)
 {
