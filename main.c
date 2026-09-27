@@ -131,7 +131,7 @@ _attribute_ram_code_ int main(void)
 {
     DBG_CHN0_LOW;
 
-    SoftTimers_Init();
+//    SoftTimers_Init();
 
     /* this function must called before "sys_init()" when:
      * (1). For all IC: using 32K RC for power management,
