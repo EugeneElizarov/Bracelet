@@ -12,7 +12,7 @@
 #include "..\messages.h"
 #include "..\Drv\softtmrs.h"
 #include "..\utils\ring_buffer.h"
-#include "..\Drv\DMA.h"
+#include "BSP_dma.h"
 
 typedef enum
 {
@@ -186,7 +186,7 @@ void UARTS_Init(void)
         desc->rx_pending_size[0] = 0;
         desc->rx_pending_size[1] = 0;
         desc->rx_dma_index = 0;
-        DMA_RegisterCallback(desc->dma_rx, uart_dma_rx_callback);
+        BSP_DMA_RegisterCallback(desc->dma_rx, uart_dma_rx_callback);
     }
 
     plic_interrupt_enable(IRQ_UART0);
