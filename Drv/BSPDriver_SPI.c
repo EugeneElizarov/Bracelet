@@ -3,6 +3,7 @@
 #include <string.h>
 #include "gpio.h"
 #include "../def.h"
+#include "../BSP/BSP_dma.h"
 
 #define SPI_DMA_ALIGNMENT      4u
 #define SPI_DMA_ALIGNMENT_MASK (SPI_DMA_ALIGNMENT - 1u)
@@ -170,7 +171,7 @@ PLIC_ISR_REGISTER(bsp_driver_spi_gspi_irq_handler, IRQ_GSPI)
  * can indicate that SPI reception ended before DMA has finished writing the
  * destination buffer.
  */
-_attribute_ram_code_sec_noinline_ void bsp_driver_spi_dma_irq_handler(void)
+_attribute_ram_code_sec_noinline_ static void bsp_driver_spi_dma_callback(dma_chn_e channel)
 {
     int i;
 
@@ -178,18 +179,12 @@ _attribute_ram_code_sec_noinline_ void bsp_driver_spi_dma_irq_handler(void)
     {
         if (spi[i].busy &&
             spi[i].transfer == SPI_TRANSFER_READ &&
-            dma_get_tc_irq_status(BIT(spi[i].rx_dma_channel)))
+            spi[i].rx_dma_channel == channel)
         {
-            dma_clr_tc_irq_status(BIT(spi[i].rx_dma_channel));
             _spi_finish((BSP_DRIVER_SPI_ID)i, BDSM_READEN);
         }
     }
-
-    /* UART RX LLP uses the same global DMA interrupt source. */
-    UART_DMA_IRQHandler();
 }
-
-PLIC_ISR_REGISTER(bsp_driver_spi_dma_irq_handler, IRQ_DMA)
 
 static void _spi_hw_init(BSP_DRIVER_SPI_ID ID)
 {
@@ -249,9 +244,9 @@ void BSP_DRIVER_SPI_Init(void)
         spi[i].busy = false;
         spi[i].cb = NULL;
         _spi_hw_init((BSP_DRIVER_SPI_ID)i);
+        BSP_DMA_RegisterCallback(spi[i].rx_dma_channel, bsp_driver_spi_dma_callback);
     }
 
-    plic_interrupt_enable(IRQ_DMA);
     plic_interrupt_enable(IRQ_LSPI);
     plic_interrupt_enable(IRQ_GSPI);
 }
