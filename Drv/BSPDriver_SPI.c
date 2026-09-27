@@ -7,7 +7,7 @@
 #define SPI_DMA_ALIGNMENT      4u
 #define SPI_DMA_ALIGNMENT_MASK (SPI_DMA_ALIGNMENT - 1u)
 #define SPI_BLOCKING_TX_MAX    64u
-#define SPI_BLOCKING_TIMEOUT_MS 100u
+#define SPI_BLOCKING_TIMEOUT_US 10000u
 
 lspi_pin_config_t lspi_pin_config =
 {
@@ -195,6 +195,15 @@ static void _spi_hw_init(BSP_DRIVER_SPI_ID ID)
     spi_master_init(dev->module,
                     sys_clk.pll_clk * 1000000 / dev->speed,
                     dev->mode);
+
+    /*
+     * The TL721X SDK defaults the SPI polling timeout to 0xffffffff us.
+     * A missing/broken SPI clock or FIFO condition therefore looks like an
+     * infinite loop during display initialization.  Keep the driver's
+     * blocking path bounded; even the largest blocking display chunk is
+     * well below this at 12 MHz.
+     */
+    spi_set_error_timeout(dev->module, SPI_BLOCKING_TIMEOUT_US);
 
     if (ID == BDSID_LSPI)
     {
