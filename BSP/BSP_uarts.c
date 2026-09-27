@@ -152,13 +152,31 @@ void UARTS_Init(void)
                                      14, UART_BW_MUL1, 4);
 
         uart_set_tx_dma_config(desc->uart, desc->dma_tx);
+        uart_set_rx_dma_config(desc->uart, desc->dma_rx);
         uart_set_irq_mask(desc->uart,
                           UART_TXDONE_MASK | UART_ERR_IRQ_MASK);
+
+        desc->ring = RingBuffer_Init(rx_ring_buffer,
+                                     sizeof(rx_ring_buffer));
+        desc->flags = 0;
+        desc->rx_pending_mask = 0;
+        desc->rx_pending_size[0] = 0;
+        desc->rx_pending_size[1] = 0;
+        desc->rx_dma_index = 0;
+
+        /*
+         * Register the DMA callback before enabling the DMA channel.
+         * The RX DMA configuration is a separate required UART/DMA setup
+         * step on TL721X; the LLP functions build the descriptor chain,
+         * but do not replace uart_set_rx_dma_config().
+         */
+        BSP_DMA_RegisterCallback(desc->dma_rx, uart_dma_rx_callback);
 
         /*
          * 1024-byte physical buffer = 4-byte hardware length field +
          * 1020-byte DMA payload.
          */
+        dma_chn_dis(desc->dma_rx);
         uart_set_dma_chain_llp(desc->uart, desc->dma_rx,
                                rx_dma_buffer[0] + UART_RX_DMA_DATA_OFFSET,
                                UART_RX_DMA_DATA_SIZE,
@@ -178,21 +196,6 @@ void UARTS_Init(void)
         dma_set_llp_irq_mode(desc->dma_rx, DMA_INTERRUPT_MODE);
         dma_set_irq_mask(desc->dma_rx, TC_MASK);
         dma_chn_en(desc->dma_rx);
-
-        desc->ring = RingBuffer_Init(rx_ring_buffer,
-                                     sizeof(rx_ring_buffer));
-        desc->flags = 0;
-        desc->rx_pending_mask = 0;
-        desc->rx_pending_size[0] = 0;
-        desc->rx_pending_size[1] = 0;
-        desc->rx_dma_index = 0;
-        BSP_DMA_RegisterCallback(desc->dma_rx, uart_dma_rx_callback);
-    }
-
-
-    plic_interrupt_enable(IRQ_UART0);
-    core_interrupt_enable();
-}
 
 bool UART_Set_cb(uart_num_e UART, UART_cb cb)
 {
@@ -268,6 +271,7 @@ void UART_Poll(void)
             /* Rebuild the LLP chain outside interrupt context. */
             dma_chn_dis(uart->dma_rx);
             dma_clr_tc_irq_status(BIT(uart->dma_rx));
+            uart_set_rx_dma_config(uart->uart, uart->dma_rx);
 
             uart_set_dma_chain_llp(uart->uart, uart->dma_rx,
                                    rx_dma_buffer[0] + UART_RX_DMA_DATA_OFFSET,
