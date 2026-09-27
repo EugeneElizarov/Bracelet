@@ -106,8 +106,8 @@ void _send_to_data_stream(DataStreamEventType type, void *data)
 			}
 			case CP_TSKBM:
 			{
-				if ((type == BB_NEW_EVENT_TSKBM_DATA11) || (type == BB_NEW_EVENT_TSKBM_DATA16))
-					memcpy(conn_desc[i].buffer, data, length);
+				if ((type == BB_EVENT_TSKBM_DATA11) || (type == BB_EVENT_TSKBM_DATA16))
+                    memcpy(conn_desc[i].buffer, data, length);
 				break;
 			}
 			default:
