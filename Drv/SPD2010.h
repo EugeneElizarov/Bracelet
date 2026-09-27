@@ -63,6 +63,9 @@ void DRIVER_SPD2010_Init(BSP_DRIVER_SPI_ID SPI_ID);
 int DRIVER_SPD2010_GetWidth(void);
 int DRIVER_SPD2010_GetHeight(void);
 void DRIVER_SPD2010_SetWindow(uint16_t xleft, uint16_t ytop, uint16_t width, uint16_t height);
+typedef void (*DRIVER_SPD2010_WRITE_CB)(void);
+
+void DRIVER_SPD2010_SetWriteCallback(DRIVER_SPD2010_WRITE_CB cb);
 void DRIVER_SPD2010_Write(TDisplayColor *data, uint32_t count, bool cont);
 void DRIVER_SPD2010_WriteSingleColor(TDisplayColor color, uint32_t count, bool cont);
 void DRIVER_SPD2010_FullDisplaySet(void);
