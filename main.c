@@ -93,7 +93,7 @@ __INLINE void blc_app_system_init(void)
     gpio_set_up_down_res(GPIO_SWS, GPIO_PIN_PULLUP_1M);
     wd_32k_stop();
     wd_stop();
-    PLL_240M_CCLK_60M_HCLK_60M_PCLK_60M_MSPI_48M;
+    PLL_240M_CCLK_120M_HCLK_60M_PCLK_60M_MSPI_48M;
 #elif (MCU_CORE_TYPE == MCU_CORE_TL321X)
     sys_init(DCDC_1P25_LDO_1P8, VBAT_MAX_VALUE_GREATER_THAN_3V6, INTERNAL_CAP_XTAL24M);
     pm_update_status_info(1);
