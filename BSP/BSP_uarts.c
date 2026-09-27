@@ -15,155 +15,181 @@
 
 typedef enum
 {
-	UF_TX_BUSY = BIT(0),
-	UF_TX_RUN = BIT(1),
-	UF_RX_DONE = BIT(2),
-	UF_ERROR = BIT(3),
-/*
-	UF_LED1 = BIT(5),
-	UF_LED2 = BIT(6),
-	UF_LED3 = BIT(7),
-*/
-}UART_Flags;
+    UF_TX_BUSY = BIT(0),
+    UF_TX_COMPLETE_PENDING = BIT(1),
+    UF_RX_ERROR = BIT(2)
+} UART_Flags;
+
+#define UART_DMA_CHANNEL_TX DMA4
+#define UART_DMA_CHANNEL_RX DMA5
+#define UART_RX_DMA_DATA_OFFSET 4
+#define UART_RX_DMA_DATA_SIZE   (UART_RX_DMA_BUFFER_SIZE - UART_RX_DMA_DATA_OFFSET)
+
+__attribute__((aligned(4))) static uint8_t rx_dma_buffer[2][UART_RX_DMA_BUFFER_SIZE];
+__attribute__((aligned(4))) static dma_chain_config_t rx_dma_list[2];
+static uint8_t rx_ring_buffer[UART_RX_RING_BUFFER_SIZE];
 
 typedef struct
 {
-	uart_num_e uart;
-	gpio_pin_e pin_tx;
-	gpio_pin_e pin_rx;
-	dma_chn_e dma_tx;
-	unsigned int baudrate;
-	unsigned int plic;
-	UART_cb cb;
-	Handle rx_buffer;
-	Handle tx_buffer;
-	uint16_t tx_buffer_size;
-	uint16_t rx_data_size;
-	uint16_t rx_timeout;
-	TimerHandle rx_timer;
-	UART_Flags flags;
-	Handle ring;
-	uint16_t rx_tmp_buffer_count;
-	uint8_t buffer[UART_TX_BUFFER_SIZE];
-	uint8_t rx_tmp_buffer[UART_RX_TMP_BUFFER_SIZE];
-}UART_Desc_t;
+    uart_num_e uart;
+    gpio_pin_e pin_tx;
+    gpio_pin_e pin_rx;
+    dma_chn_e dma_tx;
+    dma_chn_e dma_rx;
+    unsigned int baudrate;
+    unsigned int plic;
+    UART_cb cb;
+    Handle ring;
+    __attribute__((aligned(4))) uint8_t tx_buffer[UART_TX_BUFFER_SIZE];
+    volatile UART_Flags flags;
+    volatile uint8_t rx_pending_mask;
+    volatile uint16_t rx_pending_size[2];
+    volatile uint8_t rx_dma_index;
+} UART_Desc_t;
 
 typedef UART_Desc_t *UART_Desc;
 
 static UART_Desc_t uart_desc[] =
 {
-		{
-				.uart = UART0,
-				.pin_rx = GPIO_PA3,// GPIO_PA4,//GPIO_PC5, //
-				.pin_tx = GPIO_NONE_PIN,//GPIO_PA3,
-				.baudrate = UART_DEFAULT_BAUDRATE,
-				.dma_tx = DMA4,
-				.plic = IRQ_UART0,
-				.cb = NULL,
-				.rx_buffer = NULL,
-				.tx_buffer = NULL,
-				.tx_buffer_size = 0,
-				.rx_data_size = 0,
-				.rx_timeout = MS2COUNT(UART_DEFAULT_TIMEOUT),
-				.rx_timer = NULL,
-				.flags = 0,
-				.ring = NULL,
-				.rx_tmp_buffer_count = 0
-		}
+    {
+        .uart = UART0,
+        .pin_rx = GPIO_PA3,
+        .pin_tx = GPIO_NONE_PIN,
+        .dma_tx = UART_DMA_CHANNEL_TX,
+        .dma_rx = UART_DMA_CHANNEL_RX,
+        .baudrate = UART_DEFAULT_BAUDRATE,
+        .plic = IRQ_UART0,
+        .cb = NULL,
+        .ring = NULL,
+        .flags = 0,
+        .rx_pending_mask = 0,
+        .rx_pending_size = {0, 0},
+        .rx_dma_index = 0
+    }
 };
-
-static uint8_t rx_buffer[ARRAY_SIZE(uart_desc) * UART_RX_BUFFER_SIZE];
 
 static UART_Desc _get_uart_desc(uart_num_e uart)
 {
-	UART_Desc result = NULL;
-	for (int i = 0; i < ARRAY_SIZE(uart_desc); i++)
-	{
-		if (uart_desc[i].uart == uart)
-		{
-			result = &uart_desc[i];
-			break;
-		}
-	}
-	return result;
+    for (int i = 0; i < ARRAY_SIZE(uart_desc); i++)
+        if (uart_desc[i].uart == uart)
+            return &uart_desc[i];
+    return NULL;
 }
 
-static UART_Desc _get_uart_desc_from_dma(dma_chn_e channel)
+_attribute_ram_code_sec_noinline_ void UART_DMA_IRQHandler(void)
 {
-	UART_Desc result = NULL;
-	for (int i = 0; i < ARRAY_SIZE(uart_desc); i++)
-	{
-		if (uart_desc[i].dma_tx == channel)
-		{
-			result = &uart_desc[i];
-			break;
-		}
-	}
-	return result;
-}
-
-static UART_Desc _get_uart_desc_from_timer(TimerHandle timer)
-{
-	UART_Desc result = NULL;
-	for (int i = 0; i < ARRAY_SIZE(uart_desc); i++)
-	{
-		if (uart_desc[i].rx_timer == timer)
-		{
-			result = &uart_desc[i];
-			break;
-		}
-	}
-	return result;
-}
-
-static void UART_DMAcb(dma_chn_e channel, dma_irq_mask_e mask)
-{
-	UART_Desc desc = _get_uart_desc_from_dma(channel);
-	if (mask == TC_MASK)
-	{
-		desc->flags &= (~UF_TX_RUN);
-	}
-	if (mask == ERR_MASK)
-	{
-		desc->flags |= UF_ERROR;
-	}
-}
-
-static void UART_Timercb(TimerHandle timer)
-{
-	UART_Desc desc = _get_uart_desc_from_timer(timer);
-    if (desc->rx_tmp_buffer_count)
+    for (int i = 0; i < ARRAY_SIZE(uart_desc); i++)
     {
-    	//tlk_printf("Recv: %d\n", desc->rx_tmp_buffer_count);
-    	RingBuffer_AddData(desc->ring, desc->rx_tmp_buffer, desc->rx_tmp_buffer_count);
-    	desc->rx_tmp_buffer_count = 0;
+        UART_Desc desc = &uart_desc[i];
+
+        if (dma_get_tc_irq_status(BIT(desc->dma_rx)))
+        {
+            uint8_t completed = desc->rx_dma_index;
+            uint32_t length = *(uint32_t *)rx_dma_buffer[completed];
+
+            if (length > UART_RX_DMA_DATA_SIZE)
+                length = UART_RX_DMA_DATA_SIZE;
+
+            desc->rx_pending_size[completed] = (uint16_t)length;
+            desc->rx_pending_mask |= BIT(completed);
+            desc->rx_dma_index ^= 1;
+
+            dma_clr_tc_irq_status(BIT(desc->dma_rx));
+        }
     }
-	uart_hw_fsm_reset(desc->uart);
 }
+
+_attribute_ram_code_sec_noinline_ void uart0_irq_handler(void)
+{
+    UART_Desc desc = _get_uart_desc(UART0);
+
+    if (desc == NULL)
+        return;
+
+    if (uart_get_irq_status(UART0, UART_TXDONE_IRQ_STATUS))
+    {
+        uart_clr_irq_status(UART0, UART_TXDONE_IRQ_STATUS);
+
+        if (desc->flags & UF_TX_BUSY)
+        {
+            desc->flags &= ~UF_TX_BUSY;
+            desc->flags |= UF_TX_COMPLETE_PENDING;
+        }
+    }
+
+    if (uart_get_irq_status(UART0, UART_RX_ERR))
+    {
+        uart_clr_irq_status(UART0, UART_RXBUF_IRQ_STATUS);
+        desc->flags |= UF_RX_ERROR;
+    }
+}
+
+PLIC_ISR_REGISTER(uart0_irq_handler, IRQ_UART0)
 
 void UARTS_Init(void)
 {
-	core_interrupt_disable();
-	for (int i = 0; i < ARRAY_SIZE(uart_desc); i++)
-	{
-		unsigned short div;
-		unsigned char  bwpc;
-		uint16_t rx_buffer_len = UART_RX_BUFFER_SIZE - 1;
-		uart_hw_fsm_reset(uart_desc[i].uart);
-		uart_set_pin(uart_desc[i].uart, uart_desc[i].pin_tx, uart_desc[i].pin_rx);
-		uart_cal_div_and_bwpc(uart_desc[i].baudrate, sys_clk.pclk * 1000 * 1000, &div, &bwpc);
-		uart_init(uart_desc[i].uart, div, bwpc, UART_PARITY_NONE, UART_STOP_BIT_ONE);
-		//uart_set_tx_dma_config(uart_desc[i].uart, uart_desc[i].dma_tx);
-		//uart_set_irq_mask(uart_desc[i].uart, UART_TXDONE_MASK | UART_RX_IRQ_MASK);
-		//plic_interrupt_enable(uart_desc[i].plic);
-		uart_desc[i].tx_buffer_size = UART_TX_BUFFER_SIZE;
-		//BSP_DMARegister(uart_desc[i].dma_tx, UART_DMAcb, BIT(TC_MASK) | BIT(ERR_MASK));
-		uart_desc[i].rx_timer = SoftTimers_Create(uart_desc[i].rx_timeout, false, UART_Timercb);
-		uart_desc[i].ring = RingBuffer_Init(&(rx_buffer[i * UART_RX_BUFFER_SIZE]), UART_RX_BUFFER_SIZE);
-		uart_desc[i].rx_tmp_buffer_count = 0;
-	}
-	core_interrupt_enable();
+    core_interrupt_disable();
 
+    for (int i = 0; i < ARRAY_SIZE(uart_desc); i++)
+    {
+        UART_Desc desc = &uart_desc[i];
+        unsigned short div;
+        unsigned char bwpc;
+
+        uart_hw_fsm_reset(desc->uart);
+        uart_set_pin(desc->uart, desc->pin_tx, desc->pin_rx);
+        uart_cal_div_and_bwpc(desc->baudrate,
+                              sys_clk.pclk * 1000 * 1000,
+                              &div, &bwpc);
+
+        /* ~1.94 ms at 115200: 14 bit-times * 2^4. */
+        uart_set_rx_timeout_with_exp(desc->uart, bwpc,
+                                     14, UART_BW_MUL1, 4);
+
+        uart_init(desc->uart, div, bwpc,
+                  UART_PARITY_NONE, UART_STOP_BIT_ONE);
+
+        uart_set_tx_dma_config(desc->uart, desc->dma_tx);
+        uart_clr_tx_done(desc->uart);
+        uart_set_irq_mask(desc->uart,
+                          UART_TXDONE_MASK | UART_ERR_IRQ_MASK);
+
+        /*
+         * 1024-byte physical buffer = 4-byte hardware length field +
+         * 1020-byte DMA payload.
+         */
+        uart_set_dma_chain_llp(desc->uart, desc->dma_rx,
+                               rx_dma_buffer[0] + UART_RX_DMA_DATA_OFFSET,
+                               UART_RX_DMA_DATA_SIZE,
+                               &rx_dma_list[0]);
+
+        uart_rx_dma_add_list_element(desc->uart, desc->dma_rx,
+                                     &rx_dma_list[0], &rx_dma_list[1],
+                                     rx_dma_buffer[1] + UART_RX_DMA_DATA_OFFSET,
+                                     UART_RX_DMA_DATA_SIZE);
+
+        uart_rx_dma_add_list_element(desc->uart, desc->dma_rx,
+                                     &rx_dma_list[1], &rx_dma_list[0],
+                                     rx_dma_buffer[0] + UART_RX_DMA_DATA_OFFSET,
+                                     UART_RX_DMA_DATA_SIZE);
+
+        dma_clr_tc_irq_status(BIT(desc->dma_rx));
+        dma_set_llp_irq_mode(desc->dma_rx, DMA_INTERRUPT_MODE);
+        dma_set_irq_mask(desc->dma_rx, TC_MASK);
+        dma_chn_en(desc->dma_rx);
+
+        desc->ring = RingBuffer_Init(rx_ring_buffer,
+                                     sizeof(rx_ring_buffer));
+        desc->flags = 0;
+        desc->rx_pending_mask = 0;
+        desc->rx_pending_size[0] = 0;
+        desc->rx_pending_size[1] = 0;
+        desc->rx_dma_index = 0;
+    }
+
+    plic_interrupt_enable(IRQ_DMA);
+    plic_interrupt_enable(IRQ_UART0);
+    core_interrupt_enable();
 }
 
 bool UART_Set_cb(uart_num_e UART, UART_cb cb)
@@ -179,110 +205,134 @@ bool UART_Set_cb(uart_num_e UART, UART_cb cb)
 
 bool UART_Send(uart_num_e UART, void *data, int length)
 {
-	UART_Desc uart = _get_uart_desc(UART);
-	if ((uart != NULL) && (data != NULL) && (length > 0) && (length <= uart->tx_buffer_size))
-	{
-		while (uart->flags & (UF_TX_BUSY | UF_ERROR))
-			UART_Poll();
-		//memcpy(uart->tx_buffer, data, length);
-		if (uart->cb)
-			uart->cb(uart->uart, MESSAGE_UART_TX_START, 0, 0);
-		else
-			Message_Add(MESSAGE_UART_TX_START, 0, 0, 0);
-		uart->flags |= UF_TX_BUSY;// | UF_TX_RUN | UF_LED3;
-		//uart_send_dma(uart->uart, uart->tx_buffer, length);
-		uint16_t count = 0;
-		uint8_t *buf = data;
-		while (length)
-		{
-			uint8_t count;
-			if (length > 255)
-				count = 255;
-			else
-				count = length;
-			uart_send(uart->uart, buf, count);
-			buf += count;
-			length -= count;
-		}
-		return true;
-	}
-	return false;
+    UART_Desc uart = _get_uart_desc(UART);
+
+    if ((uart == NULL) || (data == NULL) ||
+        (length <= 0) || (length > UART_TX_BUFFER_SIZE))
+        return false;
+
+    int int_en = core_interrupt_disable();
+
+    /* Fully non-blocking: do not wait for an active DMA transmission. */
+    if (uart->flags & UF_TX_BUSY)
+    {
+        core_restore_interrupt(int_en);
+        return false;
+    }
+
+    /*
+     * The caller's buffer may disappear immediately after return, so DMA
+     * always reads from driver-owned RAM.
+     */
+    memcpy(uart->tx_buffer, data, length);
+    uart->flags |= UF_TX_BUSY;
+    core_restore_interrupt(int_en);
+
+    if (uart->cb)
+        uart->cb(uart->uart, MESSAGE_UART_TX_START, 0, 0);
+    else
+        Message_Add(MESSAGE_UART_TX_START, 0, 0, 0);
+
+    uart_send_dma(uart->uart, uart->tx_buffer, length);
+    return true;
 }
 
 bool UART_SendStr(uart_num_e UART, void *str)
 {
-	UART_Send(UART, str, strlen(str));
+    if (str == NULL)
+        return false;
+    return UART_Send(UART, str, strlen(str));
 }
-
-static uint8_t uart_index = 0;
-static bool polling_en = true;
 
 void UART_Poll(void)
 {
-	if (uart_index >= ARRAY_SIZE(uart_desc))
-		uart_index = 0;
-	UART_Desc uart = &(uart_desc[uart_index]);
-	int int_en = core_interrupt_disable();
-	UART_Flags flags = uart->flags;
-	core_restore_interrupt(int_en);
-	//NEURO_LED1(((flags & UF_LED1) != 0) ? ON : OFF);
-	//NEURO_LED2(((flags & UF_LED2) != 0) ? ON : OFF);
-	//NEURO_LED3(((flags & UF_LED3) != 0) ? ON : OFF);
-	if (flags & UF_ERROR)
-	{
-		uart_hw_fsm_reset(uart->uart);
-		flags = UF_TX_BUSY | UF_TX_RUN | UF_ERROR;
-		tlk_printf("UART error\n");
-	}
-	else
-	{
-		if (flags & UF_TX_BUSY)
-		{
-			if ((flags & UF_TX_RUN) == 0)
-			{
+    for (int index = 0; index < ARRAY_SIZE(uart_desc); index++)
+    {
+        UART_Desc uart = &uart_desc[index];
 
-				flags = UF_TX_BUSY;
-				if (uart->cb)
-					uart->cb(uart->uart, MESSAGE_UART_TX_COMPLETE, 0, 0);
-				else
-					Message_Add(MESSAGE_UART_TX_COMPLETE, uart->uart, 0, 0);
-			}
-		}
-		else
-			flags = 0;
-		unsigned char fifo_cnt = uart_get_rxfifo_num(uart->uart);
+        int int_en = core_interrupt_disable();
+        uint8_t rx_pending = uart->rx_pending_mask;
+        bool tx_complete =
+            (uart->flags & UF_TX_COMPLETE_PENDING) != 0;
+        bool rx_error =
+            (uart->flags & UF_RX_ERROR) != 0;
 
-		if (fifo_cnt)
-		{
-			while (fifo_cnt--)
-			{
-				if (uart->rx_tmp_buffer_count >= sizeof(uart->rx_tmp_buffer))
-				{
-					uart->rx_tmp_buffer_count = 0;
-					tlk_printf("UART ovfl\n");
-				}
+        uart->rx_pending_mask &= (uint8_t)~rx_pending;
+        uart->flags &= ~(UF_TX_COMPLETE_PENDING | UF_RX_ERROR);
+        core_restore_interrupt(int_en);
 
-				uart->rx_tmp_buffer[uart->rx_tmp_buffer_count++] = uart_read_byte(uart->uart);
-			}
-			SoftTimers_Restart(uart->rx_timer, uart->rx_timeout);
-		}
-	/*
-		if (uart_desc[uart_index].flags & UF_RX_DONE)
-		{
-			SoftTimers_Restart(uart_desc[uart_index].rx_timer, uart_desc[uart_index].rx_timeout);
-			uart_desc[uart_index].flags &= (~UF_RX_DONE);
-		}
-*/
-	}
-	if (RingBuffer_GetSize(uart->ring))
-	{
-		if (uart->cb)
-			uart->cb(uart->uart, MESSAGE_UART_RECEIVE_DATA, NULL, RingBuffer_GetSize(uart->ring));
-	}
-	int_en = core_interrupt_disable();
-	uart->flags &= ~flags;
-	core_restore_interrupt(int_en);
-	uart_index++;
+        if (rx_error)
+        {
+            /* Rebuild the LLP chain outside interrupt context. */
+            dma_chn_dis(uart->dma_rx);
+            dma_clr_tc_irq_status(BIT(uart->dma_rx));
+
+            uart_set_dma_chain_llp(uart->uart, uart->dma_rx,
+                                   rx_dma_buffer[0] + UART_RX_DMA_DATA_OFFSET,
+                                   UART_RX_DMA_DATA_SIZE,
+                                   &rx_dma_list[0]);
+
+            uart_rx_dma_add_list_element(uart->uart, uart->dma_rx,
+                                         &rx_dma_list[0], &rx_dma_list[1],
+                                         rx_dma_buffer[1] + UART_RX_DMA_DATA_OFFSET,
+                                         UART_RX_DMA_DATA_SIZE);
+
+            uart_rx_dma_add_list_element(uart->uart, uart->dma_rx,
+                                         &rx_dma_list[1], &rx_dma_list[0],
+                                         rx_dma_buffer[0] + UART_RX_DMA_DATA_OFFSET,
+                                         UART_RX_DMA_DATA_SIZE);
+
+            uart->rx_pending_mask = 0;
+            uart->rx_pending_size[0] = 0;
+            uart->rx_pending_size[1] = 0;
+            uart->rx_dma_index = 0;
+
+            dma_set_llp_irq_mode(uart->dma_rx, DMA_INTERRUPT_MODE);
+            dma_set_irq_mask(uart->dma_rx, TC_MASK);
+            dma_chn_en(uart->dma_rx);
+        }
+
+        /*
+         * Copy completed DMA buffers into the existing packet ring first.
+         * This releases the DMA buffers before any application callback can
+         * take a long time.
+         */
+        for (int buffer_index = 0; buffer_index < 2; buffer_index++)
+        {
+            if (rx_pending & BIT(buffer_index))
+            {
+                uint16_t length = uart->rx_pending_size[buffer_index];
+
+                if (length)
+                {
+                    RingBuffer_AddData(uart->ring,
+                                       rx_dma_buffer[buffer_index] +
+                                       UART_RX_DMA_DATA_OFFSET,
+                                       length);
+                }
+            }
+        }
+
+        /* Never call RX callback from the DMA ISR. */
+        if (rx_pending && uart->cb && RingBuffer_GetSize(uart->ring))
+        {
+            uart->cb(uart->uart,
+                     MESSAGE_UART_RECEIVE_DATA,
+                     NULL,
+                     RingBuffer_GetSize(uart->ring));
+        }
+
+        /* Never call TX-complete callback from the UART ISR. */
+        if (tx_complete)
+        {
+            if (uart->cb)
+                uart->cb(uart->uart,
+                         MESSAGE_UART_TX_COMPLETE, 0, 0);
+            else
+                Message_Add(MESSAGE_UART_TX_COMPLETE,
+                            uart->uart, 0, 0);
+        }
+    }
 }
 
 uint16_t UART_GetRXCount(uart_num_e UART)
