@@ -1068,7 +1068,6 @@ int main_idle_loop(void)
 {
 	Message_Poll();
 	SoftwareTimers_Poll();
-	UART_Poll();
 	DataHandler_Poll();
 #if LV_TICK_CUSTOM
 	if (display_work)
