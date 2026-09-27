@@ -47,8 +47,6 @@ typedef struct
     uint32_t speed;
     BSP_DRIVER_SPI_CB cb;
     volatile BSP_DRIVER_SPI_TRANSFER transfer;
-    volatile BSP_DRIVER_SPI_MSG pending_msg;
-    volatile bool callback_pending;
     volatile bool busy;
 } BSP_DRIVER_SPI_Def;
 
@@ -86,8 +84,6 @@ static BSP_DRIVER_SPI_Def spi[BDSID_COUNT] =
         12000000,
         NULL,
         SPI_TRANSFER_NONE,
-        BDSM_NONE,
-        false,
         false
     },
     {
@@ -100,8 +96,6 @@ static BSP_DRIVER_SPI_Def spi[BDSID_COUNT] =
         1000000,
         NULL,
         SPI_TRANSFER_NONE,
-        BDSM_NONE,
-        false,
         false
     }
 };
@@ -126,8 +120,13 @@ static void _spi_finish(BSP_DRIVER_SPI_ID ID, BSP_DRIVER_SPI_MSG msg)
     spi[ID].transfer = SPI_TRANSFER_NONE;
     spi[ID].busy = false;
 
-    spi[ID].pending_msg = msg;
-    spi[ID].callback_pending = true;
+    /*
+     * The completion callback is intentionally executed directly from the
+     * SPI/DMA ISR.  The current user is lv_disp_flush_ready(), which only
+     * marks the LVGL flush as complete and is safe to invoke from the ISR.
+     */
+    if (cb)
+        cb(ID, msg);
 }
 
 /*
@@ -235,8 +234,6 @@ void BSP_DRIVER_SPI_Init(void)
     for (i = 0; i < BDSID_COUNT; ++i)
     {
         spi[i].transfer = SPI_TRANSFER_NONE;
-        spi[i].pending_msg = BDSM_NONE;
-        spi[i].callback_pending = false;
         spi[i].busy = false;
         spi[i].cb = NULL;
         _spi_hw_init((BSP_DRIVER_SPI_ID)i);
@@ -339,22 +336,28 @@ int BSP_DRIVER_SPI_WriteBlocking(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t co
 
     /*
      * Use Telink's native blocking master-write API for short transactions.
-     * This is deliberately not implemented as DMA + SPI_END interrupt:
-     * the SDK already provides the correct blocking sequence, including
-     * FIFO setup, transfer mode and bus-busy timeout handling.
      *
-     * Unlike spi_master_write_dma(), spi_master_write() accepts an
-     * arbitrary buffer address, which is important for short command
-     * buffers allocated on the stack.
+     * SPI_END_INT is used by the asynchronous DMA path.  It must be masked
+     * during a blocking transaction: spi_master_write() also completes a
+     * normal SPI transaction and otherwise its SPI_END status could enter
+     * our ISR while the driver is still marked busy, falsely reporting the
+     * command transfer as the asynchronous frame completion.
+     *
+     * This is especially important for the display driver: command writes
+     * and the pixel DMA transfer share the same CS window.
      */
-    dev->callback_pending = false;
-    dev->pending_msg = BDSM_NONE;
+    spi_clr_irq_mask(dev->module, SPI_END_INT_EN);
+    spi_clr_irq_status(dev->module, SPI_END_INT);
+
     dev->busy = true;
-    dev->transfer = SPI_TRANSFER_WRITE;
+    dev->transfer = SPI_TRANSFER_NONE;
 
     drv_api_status_e status = spi_master_write(dev->module,
                                                (unsigned char *)buffer,
                                                count);
+
+    spi_clr_irq_status(dev->module, SPI_END_INT);
+    spi_set_irq_mask(dev->module, SPI_END_INT_EN);
 
     dev->transfer = SPI_TRANSFER_NONE;
     dev->busy = false;
@@ -364,21 +367,10 @@ int BSP_DRIVER_SPI_WriteBlocking(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t co
 
 void BSP_DRIVER_SPI_Poll(void)
 {
-    int i;
-
-    for (i = 0; i < BDSID_COUNT; ++i)
-    {
-        if (spi[i].callback_pending)
-        {
-            BSP_DRIVER_SPI_CB cb = spi[i].cb;
-            BSP_DRIVER_SPI_MSG msg = spi[i].pending_msg;
-
-            spi[i].callback_pending = false;
-
-            if (cb)
-                cb((BSP_DRIVER_SPI_ID)i, msg);
-        }
-    }
+    /*
+     * Kept as a compatibility entry point.  SPI completion callbacks are
+     * delivered directly from the peripheral ISR.
+     */
 }
 
 static void _disable_pin(gpio_pin_e pin)
