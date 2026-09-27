@@ -184,6 +184,10 @@ _attribute_ram_code_sec_noinline_ void bsp_driver_spi_dma_irq_handler(void)
             _spi_finish((BSP_DRIVER_SPI_ID)i, BDSM_READEN);
         }
     }
+    }
+
+    /* UART RX LLP uses the same global DMA interrupt source. */
+    UART_DMA_IRQHandler();
 }
 
 PLIC_ISR_REGISTER(bsp_driver_spi_dma_irq_handler, IRQ_DMA)
