@@ -336,7 +336,6 @@ void UART_Poll(void)
 
 uint16_t UART_GetRXCount(uart_num_e UART)
 {
-\tuart_desc_t *dummy = 0;
     UART_Desc desc = _get_uart_desc(UART);
     if (desc)
         return RingBuffer_GetSize(desc->ring);
@@ -345,7 +344,6 @@ uint16_t UART_GetRXCount(uart_num_e UART)
 
 uint16_t UART_Get(uart_num_e UART, void *buffer, uint16_t buffer_count)
 {
-\tuart_desc_t *dummy = 0;
     UART_Desc desc = _get_uart_desc(UART);
     if (desc)
     {
@@ -356,7 +354,6 @@ uint16_t UART_Get(uart_num_e UART, void *buffer, uint16_t buffer_count)
 /*
 _attribute_ram_code_sec_ void uart_irq_handler(uart_num_e UART)
 {
-\tuart_desc_t *dummy = 0;
     UART_Desc desc = _get_uart_desc(UART);
     if (desc == NULL)
         return;
