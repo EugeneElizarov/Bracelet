@@ -173,7 +173,8 @@ void BBStream_Poll(void)
 #if NEURO_SENSOR_PROTOCOL == 2
     		case CP_TSKBM:
     		{
-    			if (conn_desc[current_connection].buffer)
+    			if (conn_desc[current_connection].buffer &&
+                    ((uint8_t *)conn_desc[current_connection].buffer)[0] != 0)
     			{
     				if (blc_gatt_pushHandleValueNotify(conn_dev_list[ACL_CENTRAL_MAX_NUM + current_connection].conn_handle, TSKBM_Data_DataEDR_DP_H, conn_desc[current_connection].buffer, event_length[BB_EVENT_TSKBM_DATA11]) == BLE_SUCCESS)
     					((uint8_t *)(conn_desc[current_connection].buffer))[0] = 0;
