@@ -47,6 +47,8 @@ typedef struct
     uint32_t speed;
     BSP_DRIVER_SPI_CB cb;
     volatile BSP_DRIVER_SPI_TRANSFER transfer;
+    volatile BSP_DRIVER_SPI_MSG pending_msg;
+    volatile bool completion_pending;
     volatile bool busy;
 } BSP_DRIVER_SPI_Def;
 
@@ -84,6 +86,8 @@ static BSP_DRIVER_SPI_Def spi[BDSID_COUNT] =
         12000000,
         NULL,
         SPI_TRANSFER_NONE,
+        BDSM_NONE,
+        false,
         false
     },
     {
@@ -96,6 +100,8 @@ static BSP_DRIVER_SPI_Def spi[BDSID_COUNT] =
         1000000,
         NULL,
         SPI_TRANSFER_NONE,
+        BDSM_NONE,
+        false,
         false
     }
 };
@@ -142,7 +148,13 @@ _attribute_ram_code_sec_noinline_ void bsp_driver_spi_lspi_irq_handler(void)
         if (spi[BDSID_LSPI].busy &&
             spi[BDSID_LSPI].transfer == SPI_TRANSFER_WRITE)
         {
-            _spi_finish(BDSID_LSPI, BDSM_WRITEN);
+            /*
+             * SPI_END_INT means that the TX FIFO has drained, not that the
+             * last bit has left the SPI pins.  Do not complete the transfer
+             * here.  The main-context poll will wait for spi_is_busy() == 0.
+             */
+            spi[BDSID_LSPI].pending_msg = BDSM_WRITEN;
+            spi[BDSID_LSPI].completion_pending = true;
         }
     }
 }
@@ -158,7 +170,8 @@ _attribute_ram_code_sec_noinline_ void bsp_driver_spi_gspi_irq_handler(void)
         if (spi[BDSID_GSPI].busy &&
             spi[BDSID_GSPI].transfer == SPI_TRANSFER_WRITE)
         {
-            _spi_finish(BDSID_GSPI, BDSM_WRITEN);
+            spi[BDSID_GSPI].pending_msg = BDSM_WRITEN;
+            spi[BDSID_GSPI].completion_pending = true;
         }
     }
 }
@@ -243,6 +256,8 @@ void BSP_DRIVER_SPI_Init(void)
     for (i = 0; i < BDSID_COUNT; ++i)
     {
         spi[i].transfer = SPI_TRANSFER_NONE;
+        spi[i].pending_msg = BDSM_NONE;
+        spi[i].completion_pending = false;
         spi[i].busy = false;
         spi[i].cb = NULL;
         _spi_hw_init((BSP_DRIVER_SPI_ID)i);
@@ -376,10 +391,25 @@ int BSP_DRIVER_SPI_WriteBlocking(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t co
 
 void BSP_DRIVER_SPI_Poll(void)
 {
+    int i;
+
     /*
-     * Kept as a compatibility entry point.  SPI completion callbacks are
-     * delivered directly from the peripheral ISR.
+     * SPI_END_INT only says that the FIFO has drained.  The SDK requires
+     * spi_is_busy() to reach IDLE before CS may be released and before the
+     * LVGL flush can be completed.
      */
+    for (i = 0; i < BDSID_COUNT; ++i)
+    {
+        if (spi[i].completion_pending &&
+            spi[i].busy &&
+            !spi_is_busy(spi[i].module))
+        {
+            BSP_DRIVER_SPI_MSG msg = spi[i].pending_msg;
+
+            spi[i].completion_pending = false;
+            _spi_finish((BSP_DRIVER_SPI_ID)i, msg);
+        }
+    }
 }
 
 static void _disable_pin(gpio_pin_e pin)
