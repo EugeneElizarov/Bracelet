@@ -125,7 +125,6 @@ void lv_portinit(void)
 {
 
 	BSP_DRIVER_SPI_Init();
-	BSP_DRIVER_SPI_Take(BDSID_LSPI, NULL);
 	DRIVER_SPD2010_Init(BDSID_LSPI);
 	DRIVER_SPD2010_FullDisplaySet();
 	//DRIVER_SPD2010_WriteSingleColor(0x00, DRIVER_SPD2010_GetWidth() * DRIVER_SPD2010_GetHeight(), false);
