@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
+#include <math.h>
 #include "DataHandler.h"
 #include "softtmrs.h"
 #include "../BSP/BSP_battery.h"
@@ -287,7 +288,7 @@ static bool ClockMessage(Message message)
 			float res;
 			memcpy(&res, &(message->upar32), 4);
 			res *= 1000;
-			if ((abs(values.R - res) / res) >= 0.1)
+			if ((res != 0.0f) && ((fabsf(values.R - res) / fabsf(res)) >= 0.1f))
 			{
 				//tlk_printf("Resistance: %02f\n", res);
 				values.R = res;
