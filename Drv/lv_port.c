@@ -53,8 +53,6 @@ static void lvgl_port_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_col
     DRIVER_SPD2010_SetWindow(left, top, width, height);
     flushed_drv = drv;
     DRIVER_SPD2010_Write((TDisplayColor *)color_map, size, false);
-    //lv_flushed();
-    lv_disp_flush_ready(drv);
     Message_Add(MESSAGE_CLOCK_REFRESH, 0, 0, 0);
 }
 
@@ -125,6 +123,7 @@ void lv_portinit(void)
 {
 
 	BSP_DRIVER_SPI_Init();
+	DRIVER_SPD2010_SetWriteCallback(lv_flushed);
 	DRIVER_SPD2010_Init(BDSID_LSPI);
 	DRIVER_SPD2010_FullDisplaySet();
 	//DRIVER_SPD2010_WriteSingleColor(0x00, DRIVER_SPD2010_GetWidth() * DRIVER_SPD2010_GetHeight(), false);
