@@ -7,7 +7,7 @@
 
 #include "tl_common.h"
 #include "sensors.h"
-#include "BSP\BSP_uarts.h"
+#include "BSP\\BSP_uarts.h"
 #include "BBStream.h"
 #include "messages.h"
 
@@ -15,7 +15,7 @@ static uint8_t rx_buffer[128];
 static uint8_t rx_data_size = 0;
 
 #define GSR_PRESENT				0x01
-#define BRACELET_PRESENT		0x02
+#define BRACELET_PRESENT				0x02
 
 typedef union
 {
@@ -96,6 +96,7 @@ static void _sensors_UART0_cb(uart_num_e UART, uint8_t msg, void *data, int coun
 			{
 				Message_Add(MESSAGE_CHANGE_ADC_CODE, 0, 0, sensor_data.ADC.adc_code);
 				Message_Add(MESSAGE_CHANGE_RESISTANCE, 0, 0, FLOAT2UINT(sensor_data.R));
+				cdata.ADC.adc_code = sensor_data.ADC.adc_code;
 				cdata.R = sensor_data.R;
 			}
 			BBStream_TSKBMSend(&sensor_data);
