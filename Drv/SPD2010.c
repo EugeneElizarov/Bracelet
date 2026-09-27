@@ -36,6 +36,29 @@ static void _set_cs_active(bool active)
   gpio_set_level(DISPLAY_CS, active ? 0 : 1);
 }
 
+static DRIVER_SPD2010_WRITE_CB _write_callback;
+static volatile bool _async_write_active;
+
+static void _spi_callback(BSP_DRIVER_SPI_ID ID, BSP_DRIVER_SPI_MSG msg)
+{
+  if (ID != BDSID_LSPI || msg != BDSM_WRITEN)
+    return;
+
+  if (!_async_write_active)
+    return;
+
+  _async_write_active = false;
+  _set_cs_active(false);
+
+  if (_write_callback)
+    _write_callback();
+}
+
+void DRIVER_SPD2010_SetWriteCallback(DRIVER_SPD2010_WRITE_CB cb)
+{
+  _write_callback = cb;
+}
+
 static void _display_reset(void)
 {
   if (BSP_DRIVER_SPI_IsSleep(BDSID_LSPI))
@@ -64,22 +87,49 @@ static void _tx_command(uint8_t command, void *cmd_data, uint8_t cmd_data_len)
 	_set_cs_active(false);
 }
 
-static void _tx_color(bool start_write, TDisplayColor *cmd_data, uint32_t cmd_data_len)
+static void _tx_color(bool start_write, TDisplayColor *cmd_data, uint32_t cmd_data_len, bool blocking)
 {
-	uint8_t cmd[4] = {0x32, 0, start_write ? 0x2C : 0x3C, 0};
-	//if (cmd_data_len > 3)
-		//cmd[0] = 0x32;
-	BSP_DRIVER_SPI_SetMode(BDSID_LSPI, SPI_SINGLE_MODE);
-	_set_cs_active(true);
-	BSP_DRIVER_SPI_Write(BDSID_LSPI, cmd, 1);
-	BSP_DRIVER_SPI_Write(BDSID_LSPI, &cmd[1], 3);
-	if (cmd_data_len)
-	{
-		//if (cmd[0] != 0x02)
-			BSP_DRIVER_SPI_SetMode(BDSID_LSPI, SPI_QUAD_MODE);
-		BSP_DRIVER_SPI_Write(BDSID_LSPI, cmd_data, cmd_data_len);
-	}
-	_set_cs_active(false);
+  uint8_t cmd[4] = {0x32, 0, start_write ? 0x2C : 0x3C, 0};
+
+  BSP_DRIVER_SPI_SetMode(BDSID_LSPI, SPI_SINGLE_MODE);
+  _set_cs_active(true);
+
+  if (BSP_DRIVER_SPI_WriteBlocking(BDSID_LSPI, cmd, 1) < 0 ||
+      BSP_DRIVER_SPI_WriteBlocking(BDSID_LSPI, &cmd[1], 3) < 0)
+  {
+    _set_cs_active(false);
+    if (_write_callback)
+      _write_callback();
+    return;
+  }
+
+  if (!cmd_data_len)
+  {
+    _set_cs_active(false);
+    if (_write_callback)
+      _write_callback();
+    return;
+  }
+
+  if (blocking)
+  {
+    BSP_DRIVER_SPI_SetMode(BDSID_LSPI, SPI_QUAD_MODE);
+    BSP_DRIVER_SPI_WriteBlocking(BDSID_LSPI, cmd_data, cmd_data_len);
+    _set_cs_active(false);
+    return;
+  }
+
+  BSP_DRIVER_SPI_SetMode(BDSID_LSPI, SPI_QUAD_MODE);
+  _async_write_active = true;
+
+  if (BSP_DRIVER_SPI_Write(BDSID_LSPI, cmd_data, cmd_data_len) < 0)
+  {
+    _async_write_active = false;
+    _set_cs_active(false);
+    BSP_DRIVER_SPI_WriteBlocking(BDSID_LSPI, cmd_data, cmd_data_len);
+    if (_write_callback)
+      _write_callback();
+  }
 }
 
 static const spd2010_lcd_init_cmd_t vendor_specific_init_default[] = {
@@ -731,7 +781,7 @@ void DRIVER_SPD2010_Write(TDisplayColor *data, uint32_t count, bool cont)
 	  count -= cnt;
   }
 */
-  _tx_color(!cont, data, count * sizeof(TDisplayColor));
+  _tx_color(!cont, data, count * sizeof(TDisplayColor), false);
 }
 
 static TDisplayColor dspl_str[DISPLAY_WIDTH];
@@ -747,7 +797,7 @@ void DRIVER_SPD2010_WriteSingleColor(TDisplayColor color, uint32_t count, bool c
   while (count)
   {
 	  int cnt = (count > DISPLAY_WIDTH) ? DISPLAY_WIDTH : count;
-	  _tx_color(start, dspl_str, cnt * sizeof(TDisplayColor));
+	  _tx_color(start, dspl_str, cnt * sizeof(TDisplayColor), true);
 	  start = false;
 	  count -= cnt;
   }
