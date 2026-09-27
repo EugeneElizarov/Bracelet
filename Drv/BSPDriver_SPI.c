@@ -2,16 +2,13 @@
 #include <stdbool.h>
 #include <string.h>
 #include "gpio.h"
+#include "stimer.h"
 #include "../def.h"
 
-/*
- * DMA buffers used by the Telink SPI driver must be word aligned.  The
- * public API therefore rejects unaligned buffers instead of silently
- * allowing a DMA fault or a write beyond a short RX buffer.
- */
 #define SPI_DMA_ALIGNMENT      4u
 #define SPI_DMA_ALIGNMENT_MASK (SPI_DMA_ALIGNMENT - 1u)
 #define SPI_BLOCKING_TX_MAX    64u
+#define SPI_BLOCKING_TIMEOUT_US 100000u
 
 lspi_pin_config_t lspi_pin_config =
 {
@@ -46,15 +43,12 @@ typedef struct
     spi_mode_type_e mode;
     void *pin_config;
     spi_wr_rd_config_t *config;
-    dma_chn_e transmit_dma_channel;
-    dma_chn_e receive_dma_channel;
+    dma_chn_e tx_dma_channel;
+    dma_chn_e rx_dma_channel;
     uint32_t speed;
     BSP_DRIVER_SPI_CB cb;
     volatile BSP_DRIVER_SPI_TRANSFER transfer;
-    volatile bool dma_done;
-    volatile bool spi_done;
     volatile bool busy;
-    volatile bool notify;
 } BSP_DRIVER_SPI_Def;
 
 static spi_wr_rd_config_t lspi_config =
@@ -91,9 +85,6 @@ static BSP_DRIVER_SPI_Def spi[BDSID_COUNT] =
         12000000,
         NULL,
         SPI_TRANSFER_NONE,
-        false,
-        false,
-        false,
         false
     },
     {
@@ -106,9 +97,6 @@ static BSP_DRIVER_SPI_Def spi[BDSID_COUNT] =
         1000000,
         NULL,
         SPI_TRANSFER_NONE,
-        false,
-        false,
-        false,
         false
     }
 };
@@ -120,100 +108,76 @@ static bool _spi_valid_id(BSP_DRIVER_SPI_ID ID)
     return ID < BDSID_COUNT;
 }
 
-static bool _spi_valid_dma_buffer(void *buffer, uint32_t count)
+static bool _spi_valid_dma_buffer(const void *buffer)
 {
-    if (buffer == NULL || count == 0)
-        return false;
-
-    if ((((uint32_t)buffer) & SPI_DMA_ALIGNMENT_MASK) != 0)
-        return false;
-
-    /* Telink SPI DMA transfers data in 32-bit units. */
-    if ((count & SPI_DMA_ALIGNMENT_MASK) != 0)
-        return false;
-
-    return true;
+    return buffer != NULL &&
+           ((((uint32_t)buffer) & SPI_DMA_ALIGNMENT_MASK) == 0);
 }
 
-static void _spi_reset_transfer(BSP_DRIVER_SPI_ID ID)
+static void _spi_finish(BSP_DRIVER_SPI_ID ID, BSP_DRIVER_SPI_MSG msg)
 {
-    spi[ID].transfer = SPI_TRANSFER_NONE;
-    spi[ID].dma_done = false;
-    spi[ID].spi_done = false;
-    spi[ID].busy = false;
-    spi[ID].notify = false;
-}
-
-static void _spi_complete(BSP_DRIVER_SPI_ID ID)
-{
-    BSP_DRIVER_SPI_CB cb;
-    BSP_DRIVER_SPI_MSG msg;
-
-    if (!spi[ID].busy || !spi[ID].dma_done || !spi[ID].spi_done)
-        return;
-
-    /* SPI_END_INT is only the end of FIFO activity. The SDK requires
-     * waiting until the peripheral itself reports idle. */
-    if (spi_is_busy(spi[ID].module))
-        return;
-
-    msg = (spi[ID].transfer == SPI_TRANSFER_READ) ? BDSM_READEN : BDSM_WRITEN;
-    cb = spi[ID].notify ? spi[ID].cb : NULL;
+    BSP_DRIVER_SPI_CB cb = spi[ID].cb;
 
     spi[ID].transfer = SPI_TRANSFER_NONE;
-    spi[ID].dma_done = false;
-    spi[ID].spi_done = false;
     spi[ID].busy = false;
-    spi[ID].notify = false;
 
     if (cb)
         cb(ID, msg);
 }
 
-_attribute_ram_code_sec_noinline_ void bsp_driver_spi_irq_handler(void)
+/*
+ * TL721X has separate PLIC sources for LSPI and GSPI.  SPI_END_INT is used
+ * for master TX completion, exactly as recommended by the Telink SDK.
+ */
+_attribute_ram_code_sec_noinline_ void bsp_driver_spi_lspi_irq_handler(void)
 {
-    int i;
-
-    for (i = 0; i < BDSID_COUNT; i++)
+    if (spi_get_irq_status(LSPI_MODULE, SPI_END_INT))
     {
-        if (spi_get_irq_status(spi[i].module, SPI_END_INT))
+        spi_clr_irq_status(LSPI_MODULE, SPI_END_INT);
+
+        if (spi[BDSID_LSPI].busy &&
+            spi[BDSID_LSPI].transfer == SPI_TRANSFER_WRITE)
         {
-            spi_clr_irq_status(spi[i].module, SPI_END_INT);
-            if (spi[i].busy)
-            {
-                spi[i].spi_done = true;
-                _spi_complete((BSP_DRIVER_SPI_ID)i);
-            }
+            _spi_finish(BDSID_LSPI, BDSM_WRITEN);
         }
     }
 }
 
-PLIC_ISR_REGISTER(bsp_driver_spi_irq_handler, IRQ_LSPI)
+PLIC_ISR_REGISTER(bsp_driver_spi_lspi_irq_handler, IRQ_LSPI)
+
+_attribute_ram_code_sec_noinline_ void bsp_driver_spi_gspi_irq_handler(void)
+{
+    if (spi_get_irq_status(GSPI_MODULE, SPI_END_INT))
+    {
+        spi_clr_irq_status(GSPI_MODULE, SPI_END_INT);
+
+        if (spi[BDSID_GSPI].busy &&
+            spi[BDSID_GSPI].transfer == SPI_TRANSFER_WRITE)
+        {
+            _spi_finish(BDSID_GSPI, BDSM_WRITEN);
+        }
+    }
+}
+
+PLIC_ISR_REGISTER(bsp_driver_spi_gspi_irq_handler, IRQ_GSPI)
 
 /*
- * DMA TC is used together with SPI_END_INT.  DMA TC means that the DMA
- * engine has finished moving the buffer; SPI_END_INT + spi_is_busy() is the
- * peripheral-side completion indication.  Requiring both prevents the
- * callback from being issued while the last byte is still on the wire.
+ * For master RX the SDK explicitly recommends DMA TC, because SPI_END_INT
+ * can indicate that SPI reception ended before DMA has finished writing the
+ * destination buffer.
  */
 _attribute_ram_code_sec_noinline_ void bsp_driver_spi_dma_irq_handler(void)
 {
     int i;
 
-    for (i = 0; i < BDSID_COUNT; i++)
+    for (i = 0; i < BDSID_COUNT; ++i)
     {
-        uint32_t dma_mask = BIT(spi[i].transmit_dma_channel) |
-                            BIT(spi[i].receive_dma_channel);
-
-        if (dma_get_tc_irq_status(dma_mask))
+        if (spi[i].busy &&
+            spi[i].transfer == SPI_TRANSFER_READ &&
+            dma_get_tc_irq_status(BIT(spi[i].rx_dma_channel)))
         {
-            dma_clr_tc_irq_status(dma_mask);
-
-            if (spi[i].busy)
-            {
-                spi[i].dma_done = true;
-                _spi_complete((BSP_DRIVER_SPI_ID)i);
-            }
+            dma_clr_tc_irq_status(BIT(spi[i].rx_dma_channel));
+            _spi_finish((BSP_DRIVER_SPI_ID)i, BDSM_READEN);
         }
     }
 }
@@ -228,55 +192,52 @@ static void _spi_hw_init(BSP_DRIVER_SPI_ID ID)
                     sys_clk.pll_clk * 1000000 / dev->speed,
                     dev->mode);
 
-    switch (ID)
+    if (ID == BDSID_LSPI)
     {
-        case BDSID_LSPI:
-            lspi_set_pin((lspi_pin_config_t *)dev->pin_config);
-            spi_master_config(dev->module,
-                              dev->config->spi_io_mode == SPI_3_LINE_MODE ?
-                              SPI_3LINE : SPI_NORMAL);
-            BSP_DRIVER_SPI_SetMode(ID, dev->config->spi_io_mode);
-            break;
-
-        case BDSID_GSPI:
-            gspi_set_pin((gspi_pin_config_t *)dev->pin_config);
-            spi_master_config(dev->module,
-                              dev->config->spi_io_mode == SPI_3_LINE_MODE ?
-                              SPI_3LINE : SPI_NORMAL);
-            BSP_DRIVER_SPI_SetMode(ID, dev->config->spi_io_mode);
-            break;
-
-        default:
-            break;
+        lspi_set_pin((lspi_pin_config_t *)dev->pin_config);
+    }
+    else
+    {
+        gspi_set_pin((gspi_pin_config_t *)dev->pin_config);
     }
 
-    /* Configure both DMA directions. LSPI RX is not used by the project,
-     * but keeping its DMA channel configured makes the controller generic. */
-    spi_set_tx_dma_config(dev->module, dev->transmit_dma_channel);
-    spi_set_master_rx_dma_config(dev->module, dev->receive_dma_channel);
+    spi_master_config(dev->module,
+                      dev->config->spi_io_mode == SPI_3_LINE_MODE ?
+                      SPI_3LINE : SPI_NORMAL);
+    spi_set_io_mode(dev->module, dev->config->spi_io_mode);
 
-    /* Clear stale completion state before enabling interrupts. */
+    spi_set_tx_dma_config(dev->module, dev->tx_dma_channel);
+    spi_set_master_rx_dma_config(dev->module, dev->rx_dma_channel);
+
+    /*
+     * TX completion: SPI_END_INT.
+     * RX completion: DMA terminal count.
+     * Do not enable SPI_END_INT for RX; the SDK explicitly warns against it.
+     */
     spi_clr_irq_status(dev->module, SPI_END_INT);
     spi_set_irq_mask(dev->module, SPI_END_INT_EN);
 
-    dma_clr_tc_irq_status(BIT(dev->transmit_dma_channel) |
-                          BIT(dev->receive_dma_channel));
-    dma_set_irq_mask(dev->transmit_dma_channel, TC_MASK);
-    dma_set_irq_mask(dev->receive_dma_channel, TC_MASK);
+    dma_clr_tc_irq_status(BIT(dev->tx_dma_channel) |
+                          BIT(dev->rx_dma_channel));
+    dma_clr_irq_mask(dev->tx_dma_channel, TC_MASK);
+    dma_set_irq_mask(dev->rx_dma_channel, TC_MASK);
 }
 
 void BSP_DRIVER_SPI_Init(void)
 {
     int i;
 
-    for (i = 0; i < BDSID_COUNT; i++)
+    for (i = 0; i < BDSID_COUNT; ++i)
     {
-        _spi_reset_transfer((BSP_DRIVER_SPI_ID)i);
+        spi[i].transfer = SPI_TRANSFER_NONE;
+        spi[i].busy = false;
+        spi[i].cb = NULL;
         _spi_hw_init((BSP_DRIVER_SPI_ID)i);
     }
 
     plic_interrupt_enable(IRQ_DMA);
     plic_interrupt_enable(IRQ_LSPI);
+    plic_interrupt_enable(IRQ_GSPI);
 }
 
 void BSP_DRIVER_SPI_SetCallback(BSP_DRIVER_SPI_ID ID, BSP_DRIVER_SPI_CB cb)
@@ -287,76 +248,120 @@ void BSP_DRIVER_SPI_SetCallback(BSP_DRIVER_SPI_ID ID, BSP_DRIVER_SPI_CB cb)
 
 void BSP_DRIVER_SPI_SetMode(BSP_DRIVER_SPI_ID ID, spi_io_mode_e mode)
 {
-    if (_spi_valid_id(ID))
+    if (_spi_valid_id(ID) && !spi[ID].busy)
         spi_set_io_mode(spi[ID].module, mode);
 }
 
 static int _spi_start(BSP_DRIVER_SPI_ID ID,
                       BSP_DRIVER_SPI_TRANSFER transfer,
                       void *buffer,
-                      uint32_t count,
-                      bool notify)
+                      uint32_t count)
 {
-    if (!_spi_valid_id(ID) || !_spi_valid_dma_buffer(buffer, count))
+    BSP_DRIVER_SPI_Def *dev;
+
+    if (!_spi_valid_id(ID) || count == 0 || !_spi_valid_dma_buffer(buffer))
         return BDSM_ERROR;
 
-    if (spi[ID].busy)
+    dev = &spi[ID];
+
+    if (dev->busy)
         return BDSM_TAKEN;
 
-    spi[ID].transfer = transfer;
-    spi[ID].dma_done = false;
-    spi[ID].spi_done = false;
-    spi[ID].busy = true;
-    spi[ID].notify = notify;
+    /*
+     * The SDK's DMA size is specified in bytes, although the DMA engine
+     * itself uses WORD transfers. The SDK handles the final partial word;
+     * the only buffer restriction for these APIs is word alignment.
+     */
+    dma_clr_tc_irq_status(BIT(dev->tx_dma_channel) |
+                          BIT(dev->rx_dma_channel));
 
-    dma_clr_tc_irq_status(BIT(spi[ID].transmit_dma_channel) |
-                          BIT(spi[ID].receive_dma_channel));
+    dev->transfer = transfer;
+    dev->busy = true;
 
     if (transfer == SPI_TRANSFER_WRITE)
-        spi_master_write_dma(spi[ID].module, (unsigned char *)buffer, count);
+    {
+        /*
+         * TX completion is reported by SPI_END_INT. No TX DMA interrupt is
+         * needed and therefore the TX TC mask remains disabled.
+         */
+        spi_set_irq_mask(dev->module, SPI_END_INT_EN);
+        spi_master_write_dma(dev->module, (unsigned char *)buffer, count);
+    }
     else
-        spi_master_read_dma(spi[ID].module, (unsigned char *)buffer, count);
+    {
+        /*
+         * Telink explicitly requires SPI_END_INT to be disabled during
+         * master RX and DMA TC to be used as the completion indication.
+         */
+        spi_clr_irq_mask(dev->module, SPI_END_INT_EN);
+        spi_master_read_dma_plus(dev->module,
+                                 0,
+                                 0,
+                                 (unsigned char *)buffer,
+                                 count,
+                                 SPI_MODE_RD_READ_ONLY);
+    }
 
     return BDSM_OK;
 }
 
 int BSP_DRIVER_SPI_Write(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t count)
 {
-    return _spi_start(ID, SPI_TRANSFER_WRITE, buffer, count, true);
+    return _spi_start(ID, SPI_TRANSFER_WRITE, buffer, count);
 }
 
 int BSP_DRIVER_SPI_Read(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t count)
 {
-    /* LSPI is intentionally TX-only in this project. */
-    if (ID == BDSID_LSPI)
+    if (!_spi_valid_id(ID) || ID == BDSID_LSPI)
         return BDSM_ERROR;
 
-    return _spi_start(ID, SPI_TRANSFER_READ, buffer, count, true);
+    return _spi_start(ID, SPI_TRANSFER_READ, buffer, count);
 }
 
 int BSP_DRIVER_SPI_WriteBlocking(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t count)
 {
-    static uint8_t tx_buffer[BDSID_COUNT][SPI_BLOCKING_TX_MAX] __attribute__((aligned(4)));
-    uint32_t dma_count;
+    static uint8_t aligned_buffer[BDSID_COUNT][SPI_BLOCKING_TX_MAX]
+        __attribute__((aligned(4)));
+
+    void *dma_buffer = buffer;
+    uint32_t start_tick;
     int result;
 
-    if (!_spi_valid_id(ID) || buffer == NULL || count == 0 ||
-        count > SPI_BLOCKING_TX_MAX)
+    if (!_spi_valid_id(ID) || buffer == NULL || count == 0)
         return BDSM_ERROR;
 
-    dma_count = (count + SPI_DMA_ALIGNMENT_MASK) & ~SPI_DMA_ALIGNMENT_MASK;
-    memcpy(tx_buffer[ID], buffer, count);
-    if (dma_count > count)
-        memset(tx_buffer[ID] + count, 0, dma_count - count);
+    /*
+     * A short unaligned command is copied to an aligned DMA buffer.  The
+     * exact byte count is still passed to the SDK: padding must NOT be sent
+     * on the SPI bus.
+     *
+     * Large transfers are not copied because doing so would destroy the
+     * purpose of a DMA API. Their caller must provide a word-aligned buffer.
+     */
+    if (!_spi_valid_dma_buffer(buffer))
+    {
+        if (count > SPI_BLOCKING_TX_MAX)
+            return BDSM_ERROR;
 
-    result = _spi_start(ID, SPI_TRANSFER_WRITE, tx_buffer[ID], dma_count, false);
+        memcpy(aligned_buffer[ID], buffer, count);
+        dma_buffer = aligned_buffer[ID];
+    }
+
+    result = _spi_start(ID, SPI_TRANSFER_WRITE, dma_buffer, count);
     if (result != BDSM_OK)
         return result;
 
-    /* Intended for normal application context, not an ISR. */
+    start_tick = stimer_get_tick();
     while (spi[ID].busy)
     {
-        /* The completion is interrupt driven; no polling is required here. */
+        if (clock_time_exceed(start_tick, SPI_BLOCKING_TIMEOUT_US))
+        {
+            spi_hw_fsm_reset(spi[ID].module);
+            spi[ID].busy = false;
+            spi[ID].transfer = SPI_TRANSFER_NONE;
+            spi_clr_irq_status(spi[ID].module, SPI_END_INT);
+            return BDSM_ERROR;
+        }
     }
 
     return BDSM_OK;
@@ -364,7 +369,7 @@ int BSP_DRIVER_SPI_WriteBlocking(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t co
 
 void BSP_DRIVER_SPI_Poll(void)
 {
-    /* Compatibility stub. Completion is now interrupt driven. */
+    /* Kept temporarily for source compatibility. Transfers are interrupt-driven. */
 }
 
 static void _disable_pin(gpio_pin_e pin)
@@ -382,33 +387,38 @@ static void _disable_pin(gpio_pin_e pin)
 
 void BSP_DRIVER_SPI_Sleep(BSP_DRIVER_SPI_ID ID)
 {
+    BSP_DRIVER_SPI_Def *dev;
+
     if (!_spi_valid_id(ID))
         return;
 
-    if (spi[ID].busy)
+    dev = &spi[ID];
+
+    if (dev->busy)
         return;
 
-    switch (ID)
+    spi_hw_fsm_reset(dev->module);
+
+    if (ID == BDSID_LSPI)
     {
-        case BDSID_LSPI:
-            spi_hw_fsm_reset(spi[ID].module);
-            reg_clk_en0 &= ~FLD_CLK0_LSPI_EN;
-            _disable_pin(lspi_pin_config.spi_clk_pin);
-            _disable_pin(lspi_pin_config.spi_csn_pin);
-            _disable_pin(lspi_pin_config.spi_io2_pin);
-            _disable_pin(lspi_pin_config.spi_io3_pin);
-            _disable_pin(lspi_pin_config.spi_miso_io1_pin);
-            _disable_pin(lspi_pin_config.spi_mosi_io0_pin);
-            LSPI_sleep = true;
-            break;
-
-        case BDSID_GSPI:
-            /* GSPI sleep clock control is not changed here until the exact
-             * TL7218AE clock-gate definition is verified. */
-            break;
-
-        default:
-            break;
+        reg_clk_en0 &= ~FLD_CLK0_LSPI_EN;
+        _disable_pin(lspi_pin_config.spi_clk_pin);
+        _disable_pin(lspi_pin_config.spi_csn_pin);
+        _disable_pin(lspi_pin_config.spi_io2_pin);
+        _disable_pin(lspi_pin_config.spi_io3_pin);
+        _disable_pin(lspi_pin_config.spi_miso_io1_pin);
+        _disable_pin(lspi_pin_config.spi_mosi_io0_pin);
+        LSPI_sleep = true;
+    }
+    else
+    {
+        reg_clk_en1 &= ~FLD_CLK1_GSPI_EN;
+        _disable_pin(gspi_pin_config.spi_clk_pin);
+        _disable_pin(gspi_pin_config.spi_csn_pin);
+        _disable_pin(gspi_pin_config.spi_io2_pin);
+        _disable_pin(gspi_pin_config.spi_io3_pin);
+        _disable_pin(gspi_pin_config.spi_miso_io1_pin);
+        _disable_pin(gspi_pin_config.spi_mosi_io0_pin);
     }
 }
 
@@ -417,31 +427,16 @@ void BSP_DRIVER_SPI_Wakeup(BSP_DRIVER_SPI_ID ID)
     if (!_spi_valid_id(ID))
         return;
 
-    switch (ID)
-    {
-        case BDSID_LSPI:
-            _spi_hw_init(ID);
-            LSPI_sleep = false;
-            break;
+    _spi_hw_init(ID);
 
-        case BDSID_GSPI:
-            _spi_hw_init(ID);
-            break;
-
-        default:
-            break;
-    }
+    if (ID == BDSID_LSPI)
+        LSPI_sleep = false;
 }
 
 bool BSP_DRIVER_SPI_IsSleep(BSP_DRIVER_SPI_ID ID)
 {
-    switch (ID)
-    {
-        case BDSID_LSPI:
-            return LSPI_sleep;
-        case BDSID_GSPI:
-            return false;
-        default:
-            return false;
-    }
+    if (ID == BDSID_LSPI)
+        return LSPI_sleep;
+
+    return false;
 }
