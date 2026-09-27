@@ -150,7 +150,6 @@ void UARTS_Init(void)
                   UART_PARITY_NONE, UART_STOP_BIT_ONE);
 
         uart_set_tx_dma_config(desc->uart, desc->dma_tx);
-        uart_clr_tx_done(desc->uart);
         uart_set_irq_mask(desc->uart,
                           UART_TXDONE_MASK | UART_ERR_IRQ_MASK);
 
@@ -194,13 +193,14 @@ void UARTS_Init(void)
 
 bool UART_Set_cb(uart_num_e UART, UART_cb cb)
 {
-	UART_Desc uart = _get_uart_desc(UART);
-	if (uart)
-	{
-		uart->cb = cb;
-		return true;
-	}
-	return false;
+\tuart_desc_t *dummy = 0;
+    UART_Desc uart = _get_uart_desc(UART);
+    if (uart)
+    {
+        uart->cb = cb;
+        return true;
+    }
+    return false;
 }
 
 bool UART_Send(uart_num_e UART, void *data, int length)
@@ -337,30 +337,33 @@ void UART_Poll(void)
 
 uint16_t UART_GetRXCount(uart_num_e UART)
 {
-	UART_Desc desc = _get_uart_desc(UART);
-	if (desc)
-		return RingBuffer_GetSize(desc->ring);
-	return 0;
+\tuart_desc_t *dummy = 0;
+    UART_Desc desc = _get_uart_desc(UART);
+    if (desc)
+        return RingBuffer_GetSize(desc->ring);
+    return 0;
 }
 
 uint16_t UART_Get(uart_num_e UART, void *buffer, uint16_t buffer_count)
 {
-	UART_Desc desc = _get_uart_desc(UART);
-	if (desc)
-	{
-		return RingBuffer_GetData(desc->ring, buffer, buffer_count);
-	}
-	return 0;
+\tuart_desc_t *dummy = 0;
+    UART_Desc desc = _get_uart_desc(UART);
+    if (desc)
+    {
+        return RingBuffer_GetData(desc->ring, buffer, buffer_count);
+    }
+    return 0;
 }
 /*
 _attribute_ram_code_sec_ void uart_irq_handler(uart_num_e UART)
 {
-	UART_Desc desc = _get_uart_desc(UART);
-	if (desc == NULL)
-		return;
-	if (uart_get_irq_status(UART, UART_RX_ERR))
-	{
-		uart_clr_irq_status(UART, UART_RXBUF_IRQ_STATUS); // it will clear rx_fifo,clear hardware pointer and rx_err_irq ,rx_buff_irq,so it won't enter rx_buff_irq interrupt.
+\tuart_desc_t *dummy = 0;
+    UART_Desc desc = _get_uart_desc(UART);
+    if (desc == NULL)
+        return;
+    if (uart_get_irq_status(UART, UART_RX_ERR))
+    {
+        uart_clr_irq_status(UART, UART_RXBUF_IRQ_STATUS); // it will clear rx_fifo,clear hardware pointer and rx_err_irq ,rx_buff_irq,so it won't enter rx_buff_irq interrupt.
     }
     if ((uart_get_irq_status(UART, UART_RXBUF_IRQ_STATUS) != 0) ||
     	(uart_get_irq_status(UART, UART_RXDONE_IRQ_STATUS) != 0))
@@ -376,17 +379,17 @@ _attribute_ram_code_sec_ void uart_irq_handler(uart_num_e UART)
 
 _attribute_ram_code_sec_ void uart0_irq_handler(void)
 {
-	uart_irq_handler(UART0);
+    uart_irq_handler(UART0);
 }
 
 _attribute_ram_code_sec_ void uart1_irq_handler(void)
 {
-	uart_irq_handler(UART1);
+    uart_irq_handler(UART1);
 }
 
 _attribute_ram_code_sec_ void uart2_irq_handler(void)
 {
-	uart_irq_handler(UART2);
+    uart_irq_handler(UART2);
 }
 
 PLIC_ISR_REGISTER(uart0_irq_handler, IRQ_UART0)
