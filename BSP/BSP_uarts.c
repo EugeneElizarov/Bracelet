@@ -12,6 +12,7 @@
 #include "..\messages.h"
 #include "..\Drv\softtmrs.h"
 #include "..\utils\ring_buffer.h"
+#include "BSP_dma.h"
 
 typedef enum
 {
@@ -76,13 +77,13 @@ static UART_Desc _get_uart_desc(uart_num_e uart)
     return NULL;
 }
 
-_attribute_ram_code_sec_noinline_ void UART_DMA_IRQHandler(void)
+_attribute_ram_code_sec_noinline_ static void uart_dma_rx_callback(dma_chn_e channel)
 {
     for (int i = 0; i < ARRAY_SIZE(uart_desc); i++)
     {
         UART_Desc desc = &uart_desc[i];
 
-        if (dma_get_tc_irq_status(BIT(desc->dma_rx)))
+        if (desc->dma_rx == channel)
         {
             uint8_t completed = desc->rx_dma_index;
             uint32_t length = *(uint32_t *)rx_dma_buffer[completed];
@@ -93,8 +94,6 @@ _attribute_ram_code_sec_noinline_ void UART_DMA_IRQHandler(void)
             desc->rx_pending_size[completed] = (uint16_t)length;
             desc->rx_pending_mask |= BIT(completed);
             desc->rx_dma_index ^= 1;
-
-            dma_clr_tc_irq_status(BIT(desc->dma_rx));
         }
     }
 }
@@ -124,7 +123,6 @@ _attribute_ram_code_sec_noinline_ void uart0_irq_handler(void)
     }
 }
 
-PLIC_ISR_REGISTER(UART_DMA_IRQHandler, IRQ_DMA)
 PLIC_ISR_REGISTER(uart0_irq_handler, IRQ_UART0)
 
 void UARTS_Init(void)
@@ -188,9 +186,10 @@ void UARTS_Init(void)
         desc->rx_pending_size[0] = 0;
         desc->rx_pending_size[1] = 0;
         desc->rx_dma_index = 0;
+        BSP_DMA_RegisterCallback(desc->dma_rx, uart_dma_rx_callback);
     }
 
-    plic_interrupt_enable(IRQ_DMA);
+
     plic_interrupt_enable(IRQ_UART0);
     core_interrupt_enable();
 }
