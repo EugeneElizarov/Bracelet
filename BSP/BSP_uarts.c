@@ -124,6 +124,7 @@ _attribute_ram_code_sec_noinline_ void uart0_irq_handler(void)
     }
 }
 
+PLIC_ISR_REGISTER(UART_DMA_IRQHandler, IRQ_DMA)
 PLIC_ISR_REGISTER(uart0_irq_handler, IRQ_UART0)
 
 void UARTS_Init(void)
@@ -142,12 +143,15 @@ void UARTS_Init(void)
                               sys_clk.pclk * 1000 * 1000,
                               &div, &bwpc);
 
-        /* ~1.94 ms at 115200: 14 bit-times * 2^4. */
-        uart_set_rx_timeout_with_exp(desc->uart, bwpc,
-                                     14, UART_BW_MUL1, 4);
-
         uart_init(desc->uart, div, bwpc,
                   UART_PARITY_NONE, UART_STOP_BIT_ONE);
+
+        /*
+         * TL721X RX timeout: 14 bit-times * 2^4 / 115200 ~= 1.94 ms.
+         * The timeout is measured from the last received byte.
+         */
+        uart_set_rx_timeout_with_exp(desc->uart, bwpc,
+                                     14, UART_BW_MUL1, 4);
 
         uart_set_tx_dma_config(desc->uart, desc->dma_tx);
         uart_set_irq_mask(desc->uart,
