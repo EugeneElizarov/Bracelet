@@ -54,7 +54,7 @@ static UART_Desc_t uart_desc[] =
     {
         .uart = UART0,
         .pin_rx = GPIO_PA3,
-        .pin_tx = GPIO_NONE_PIN,
+        .pin_tx = GPIO_PA4,
         .dma_tx = UART_DMA_CHANNEL_TX,
         .dma_rx = UART_DMA_CHANNEL_RX,
         .baudrate = UART_DEFAULT_BAUDRATE,
