@@ -381,10 +381,10 @@ int BSP_DRIVER_SPI_WriteBlocking(BSP_DRIVER_SPI_ID ID, void *buffer, uint32_t co
     if (result != BDSM_OK)
         return result;
 
-    start_tick = stimer_get_tick();
+    start_count = SoftwareTimers_GetCount();
     while (spi[ID].busy)
     {
-        if (clock_time_exceed(start_tick, SPI_BLOCKING_TIMEOUT_US))
+        if ((uint32_t)(SoftwareTimers_GetCount() - start_count) >= MS2COUNT(SPI_BLOCKING_TIMEOUT_MS))
         {
             spi_hw_fsm_reset(spi[ID].module);
             spi[ID].busy = false;
