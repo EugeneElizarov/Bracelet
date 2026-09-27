@@ -84,7 +84,7 @@ static void _sensors_UART0_cb(uart_num_e UART, uint8_t msg, void *data, int coun
 			if (cdata.flags.bracelet_present != sensor_data.flags.bracelet_present)
 			{
 				cdata.flags.bracelet_present = sensor_data.flags.bracelet_present;
-				Message_Add(cdata.flags.bracelet_present != 0 ? MESSAGE_BRACELET_HAND_ON : MESSAGE_BRACELET_HAND_ON, 0, 0, 0);
+				Message_Add(cdata.flags.bracelet_present != 0 ? MESSAGE_BRACELET_HAND_ON : MESSAGE_BRACELET_HAND_OFF, 0, 0, 0);
 			}
 			if (sensor_data.flags.gsr_present)
 				Message_Add(MESSAGE_PULSE_GSR, 0, 0, 1);

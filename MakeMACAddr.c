@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include "MakeMACAddr.h"
 
-#define SIZE_TABLE_RANDOM_STATIC_ADDR			15
+#define SIZE_TABLE_RANDOM_STATIC_ADDR			16
 #define B_ADDR_LEN								6
 
 static const uint8_t TSKBM_RandomStaticAddr[SIZE_TABLE_RANDOM_STATIC_ADDR][B_ADDR_LEN]=

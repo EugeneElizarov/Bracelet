@@ -80,7 +80,7 @@ bool Message_AddProcessor(MessageProcessor processor, uint8_t message_count, con
 		while (*msg_block)
 			msg_block += (*msg_block + 1);
 		index = (uint32_t)msg_block - (uint32_t)message_processor_buffer;
-		if ((MESSAGE_PROCESSOR_BUFFER_SIZE - index) > message_count)
+		if ((MESSAGE_PROCESSOR_BUFFER_SIZE - index) >= (message_count + 2))
 		{
 			ProcessorDesc *cproc = _processor_free_ptr();
 			if (_processor_valid(cproc))
