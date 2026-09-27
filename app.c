@@ -975,10 +975,18 @@ _attribute_no_inline_ void user_init_normal(void)
     ////////////////////////////////////////////////////////////////////////////////////////////////
 
     tlkapi_send_string_data(APP_LOG_EN, "[APP][INI] acl peripheral demo init", 0, 0);
-#if TLKAPI_DEBUG_ENABLE
-    while (tlkapi_debug_isBusy())
-    	tlkapi_debug_handler();
-#endif
+
+    /*
+     * Do not wait for the debug UART here.
+     *
+     * user_init_normal() is called before irq_enable() in main().  For the
+     * UART debug channel, tlkapi_debug_handler() starts a DMA transmission
+     * and the DMA/UART completion path needs interrupts to clear the busy
+     * state.  Waiting here can therefore deadlock forever with interrupts
+     * disabled.  The normal main loop calls tlkapi_debug_handler() after
+     * irq_enable(), so the final initialization message will be drained
+     * there.
+     */
 }
 
 /**
