@@ -53,13 +53,13 @@ static void _tx_command(uint8_t command, void *cmd_data, uint8_t cmd_data_len)
 	uint8_t cmd[4] = {2, 0, command, 0};
 	BSP_DRIVER_SPI_SetMode(BDSID_LSPI, SPI_SINGLE_MODE);
 	_set_cs_active(true);
-	BSP_DRIVER_SPI_Write(BDSID_LSPI, cmd, 1);
-	BSP_DRIVER_SPI_Write(BDSID_LSPI, &cmd[1], 3);
+	BSP_DRIVER_SPI_WriteBlocking(BDSID_LSPI, cmd, 1);
+	BSP_DRIVER_SPI_WriteBlocking(BDSID_LSPI, &cmd[1], 3);
 	if (cmd_data_len)
 	{
 		//if (cmd[0] != 0x02)
 			//BSP_DRIVER_SPI_SetMode(BDSID_LSPI, SPI_QUAD_MODE);
-		BSP_DRIVER_SPI_Write(BDSID_LSPI, cmd_data, cmd_data_len);
+		BSP_DRIVER_SPI_WriteBlocking(BDSID_LSPI, cmd_data, cmd_data_len);
 	}
 	_set_cs_active(false);
 }
