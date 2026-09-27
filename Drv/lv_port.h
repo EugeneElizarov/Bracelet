@@ -8,7 +8,7 @@
 #ifndef VENDOR_SPI_DEMO_DRV_LV_PORT_H_
 #define VENDOR_SPI_DEMO_DRV_LV_PORT_H_
 
-#define LVGL_TICK_PERIOD_MS					50
+#define LVGL_TICK_PERIOD_MS					5
 #define LVGL_BUF_LEN						(412 * 25)
 
 void lv_portinit(void);
