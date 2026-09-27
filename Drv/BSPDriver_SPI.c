@@ -3,7 +3,7 @@
 #include <string.h>
 #include "gpio.h"
 #include "../def.h"
-#include "DMA.h"
+#include "../BSP/BSP_dma.h"
 
 #define SPI_DMA_ALIGNMENT      4u
 #define SPI_DMA_ALIGNMENT_MASK (SPI_DMA_ALIGNMENT - 1u)
@@ -244,7 +244,7 @@ void BSP_DRIVER_SPI_Init(void)
         spi[i].busy = false;
         spi[i].cb = NULL;
         _spi_hw_init((BSP_DRIVER_SPI_ID)i);
-        DMA_RegisterCallback(spi[i].rx_dma_channel, bsp_driver_spi_dma_callback);
+        BSP_DMA_RegisterCallback(spi[i].rx_dma_channel, bsp_driver_spi_dma_callback);
     }
 
     plic_interrupt_enable(IRQ_LSPI);
