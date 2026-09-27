@@ -193,7 +193,6 @@ void UARTS_Init(void)
 
 bool UART_Set_cb(uart_num_e UART, UART_cb cb)
 {
-\tuart_desc_t *dummy = 0;
     UART_Desc uart = _get_uart_desc(UART);
     if (uart)
     {
