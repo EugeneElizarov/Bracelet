@@ -10,11 +10,11 @@
 
 #include "tl_common.h"
 
-#define UART_RX_TMP_BUFFER_SIZE	512
-#define UART_RX_BUFFER_SIZE		1024
-#define UART_TX_BUFFER_SIZE		256
-#define UART_DEFAULT_BAUDRATE	115200
-#define UART_DEFAULT_TIMEOUT	4
+#define UART_RX_DMA_BUFFER_SIZE   1024
+#define UART_RX_RING_BUFFER_SIZE  2048
+#define UART_TX_BUFFER_SIZE       256
+#define UART_DEFAULT_BAUDRATE     115200
+#define UART_DEFAULT_TIMEOUT      2
 
 typedef void (* UART_cb)(uart_num_e UART, uint8_t msg, void *data, int count);
 
